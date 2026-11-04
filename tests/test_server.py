@@ -45,7 +45,7 @@ class OpenServerTests(ServerTestCase):
     def test_tool_listing_has_one_url_per_tool(self):
         status, tools = self.request("GET", "/tools")
         self.assertEqual(status, 200)
-        self.assertEqual(len(tools), 7)
+        self.assertEqual(len(tools), 11)
         for t in tools:
             self.assertEqual(t["url"], f"{self.base}/tools/{t['name']}")
             self.assertEqual(t["method"], "POST")
@@ -107,18 +107,26 @@ class OpenServerTests(ServerTestCase):
     def test_select_demo_scenario_by_number_resets_call(self):
         self.request("POST", "/tools/authenticate_merchant", AUTH_ARGS)
         r = self.request("POST", "/tools/select_demo_scenario", {"scenario": "5"})[1]
-        self.assertEqual((r["scenario"], r["demo_merchant_id_spoken"]), ("bank_update_case", "4 4 7, 2 1 9 0"))
+        self.assertEqual(r, {"selected": True, "scenario": "bank_update_case",
+                             "caller_reason": "updating their bank account"})
         self.assertIn("error", self.request("POST", "/tools/get_account_status", {"merchant_id": "4472190"})[1])
         self.request("POST", "/tools/authenticate_merchant", AUTH_ARGS)
         status = self.request("POST", "/tools/get_account_status", {"merchant_id": "4472190"})[1]
         self.assertTrue(status["bank_account_update_case"]["open"])
 
     def test_select_demo_scenario_canada_and_bad_choice(self):
-        r = self.request("POST", "/tools/select_demo_scenario", {"scenario": "9"})[1]
-        self.assertEqual(r["demo_merchant_id"], "8830417")
+        self.assertTrue(self.request("POST", "/tools/select_demo_scenario", {"scenario": "canada_line"})[1]["selected"])
         self.assertEqual(self.request("POST", "/tools/get_call_context")[1]["dialed_line"], "CA_MAIN")
-        bad = self.request("POST", "/tools/select_demo_scenario", {"scenario": "42"})[1]
-        self.assertFalse(bad["tool_ran"])
+        for choice in ("7", "42"):
+            bad = self.request("POST", "/tools/select_demo_scenario", {"scenario": choice})[1]
+            self.assertFalse(bad["tool_ran"])
+
+    def test_demo_menu_numbers(self):
+        expected = {"1": "fraud_hold_recent", "2": "fraud_hold_aged_open", "3": "missing_deposit",
+                    "4": "fee_question", "5": "bank_update_case", "6": "unrecognized_bank_change"}
+        for number, scenario_id in expected.items():
+            r = self.request("POST", "/tools/select_demo_scenario", {"scenario": number})[1]
+            self.assertEqual(r["scenario"], scenario_id)
 
     def test_reset_clears_auth(self):
         h = {"X-Call-Id": "r"}

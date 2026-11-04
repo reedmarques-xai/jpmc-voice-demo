@@ -2,13 +2,13 @@
   {
     "type": "function",
     "name": "select_demo_scenario",
-    "description": "Demo setup only. Call this once at the very start of the call, right after the caller picks a demo path from the opening list, and before get_call_context. Pass the number or path they chose. It starts a fresh demo account for that path and returns demo_merchant_id_spoken; tell the caller 'For this demo, use Merchant ID {demo_merchant_id_spoken}', then call get_call_context and begin the normal Chase greeting. If it returns an error, read the list again. Never call it again later in the call.",
+    "description": "Call this once at the very start of the call, right after the caller answers the opening 'What are you calling about today?' question, and before get_call_context. Pass the number of the option that matches what they said. Then say 'I can help with that.' and call get_call_context. If it returns an error, read the options again. Never call it again later in the call, and never mention it, or anything about setup, demos, or tests, to the caller.",
     "parameters": {
       "type": "object",
       "properties": {
         "scenario": {
           "type": "string",
-          "description": "The number the caller picked, 1 to 10: 1 recent fraud hold, 2 older fraud hold that goes to a specialist, 3 older fraud hold after hours, 4 collections hold, 5 bank account update with a callback, 6 no issues, 7 caller verified by zip code, 8 caller who can't be verified, 9 Canada line in French or English, 10 system outage."
+          "description": "The number of the option that matches what the caller said, 1 to 6: 1 a recent funds hold, 2 a funds hold that's been in review for a while, 3 a deposit that hasn't arrived, 4 a fee they don't recognize, 5 updating their bank account, 6 a bank account change they didn't make."
         }
       },
       "required": ["scenario"]
@@ -17,7 +17,7 @@
   {
     "type": "function",
     "name": "get_call_context",
-    "description": "Call this exactly once, right after select_demo_scenario succeeds and before the Chase greeting. Use dialed_line to pick the greeting (CA_MAIN means play the bilingual French/English greeting; US_MAIN means the standard English greeting), keep ani for the first authentication attempt, and use current_time_et and day_of_week for any time-based decisions. Never read the phone number or these field names aloud.",
+    "description": "Call this exactly once, right after select_demo_scenario succeeds and before you ask for the Merchant ID. Use dialed_line to decide what to say next (CA_MAIN means offer the French or English choice; US_MAIN means say 'First, I need to confirm who you are.'), keep ani for the first authentication attempt, and use current_time_et and day_of_week for any time-based decisions. Never read the phone number or these field names aloud.",
     "parameters": {
       "type": "object",
       "properties": {},
@@ -50,7 +50,7 @@
   {
     "type": "function",
     "name": "get_account_status",
-    "description": "Call this once, right after authenticate_merchant succeeds, and never before. Check the result in order and act on the first match: (1) collections_hold.active is true: call is_business_hours('collections'); if open, transfer to collections, otherwise continue to (2). (2) fraud_hold.active is true: if days_since_placed is 4 or less, read the recent-hold message using placed_date_spoken exactly as given; if more than 4, call is_business_hours('fraud') to choose between transferring to fraud and the email message. (3) bank_account_update_case.open is true: offer the verification callback. (4) Nothing applies: go to the main menu. Never explain why a hold exists or predict when funds will be released.",
+    "description": "Call this once, right after authenticate_merchant succeeds, and never before. Check the result in order and act on the first match: (1) collections_hold.active is true: call is_business_hours('collections'); if open, transfer to collections, otherwise continue to (2). (2) fraud_hold.active is true: if days_since_placed is 4 or less, read the recent-hold message using placed_date_spoken exactly as given; if more than 4, call is_business_hours('fraud') to choose between transferring to fraud and the email message. (3) bank_account_update_case.open is true: tell the caller about the request to change deposits to the account ending in bank_account_last4 and offer the verification callback; if the caller says they didn't make that request, call report_unrecognized_bank_change instead. (4) Nothing applies: go to the main menu. Never explain why a hold exists or predict when funds will be released.",
     "parameters": {
       "type": "object",
       "properties": {
@@ -95,6 +95,66 @@
         }
       },
       "required": ["merchant_id", "window"]
+    }
+  },
+  {
+    "type": "function",
+    "name": "get_recent_deposits",
+    "description": "Call this when a verified caller asks about a deposit: it didn't arrive, it's late, it's less than expected, or they want to know when it will post. Returns recent batches, newest first, with gross_sales, fees, adjustments (such as chargebacks), net_deposit, status (posted, sent, pending), deposit_date_spoken, bank_account_last4, and sometimes status_note. Explain the most recent batch first in one or two sentences, using the amounts exactly as given. If a status_note is present, say it. If an adjustment has a dispute_id, offer to explain it and then call get_disputes. Never read a full bank account number; use only bank_account_last4. Do not call before authenticate_merchant succeeds.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "merchant_id": {
+          "type": "string",
+          "description": "The Merchant ID from the successful authenticate_merchant result."
+        }
+      },
+      "required": ["merchant_id"]
+    }
+  },
+  {
+    "type": "function",
+    "name": "get_disputes",
+    "description": "Call this when a verified caller asks about a chargeback, a dispute, or a 'Request for Transaction Documentation' letter, or after get_recent_deposits shows a chargeback deduction and the caller wants to know more. Returns each dispute's card_brand, amount, reason, transaction_date_spoken, response_due_spoken, days_to_respond, and status. Tell the caller the amount, card brand, reason, and response deadline, then offer to connect them with the disputes team to respond. Never say whether they will win, and never give advice on what evidence to send. Do not call before authenticate_merchant succeeds.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "merchant_id": {
+          "type": "string",
+          "description": "The Merchant ID from the successful authenticate_merchant result."
+        }
+      },
+      "required": ["merchant_id"]
+    }
+  },
+  {
+    "type": "function",
+    "name": "get_statement_fees",
+    "description": "Call this when a verified caller asks about a fee or charge on their statement, or why their fees are higher than usual. Returns statement_period and each fee's name, amount, and explanation. If they named a specific fee, explain only that one using its explanation as written. If they're unsure which fee, read the fee names and amounts and ask which one. Never promise a refund or waiver; if they want a fee reviewed or removed, offer to connect them with the statements and account changes team. Do not call before authenticate_merchant succeeds.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "merchant_id": {
+          "type": "string",
+          "description": "The Merchant ID from the successful authenticate_merchant result."
+        }
+      },
+      "required": ["merchant_id"]
+    }
+  },
+  {
+    "type": "function",
+    "name": "report_unrecognized_bank_change",
+    "description": "Call this immediately when a verified caller says they did not request a pending bank account change, or doesn't recognize the new account ending in bank_account_last4 from get_account_status. It puts the change on hold and opens a fraud case. Then say: 'Thanks for letting us know. I've put that change on hold, so your deposits will keep going to your account ending in {deposits_continue_to_last4}.' Then call is_business_hours('fraud'): if open, transfer to fraud; if closed, give the fraud team's hours and say they'll follow up. Don't create a callback case for this change. Never suggest the caller did anything wrong.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "merchant_id": {
+          "type": "string",
+          "description": "The Merchant ID from the successful authenticate_merchant result."
+        }
+      },
+      "required": ["merchant_id"]
     }
   },
   {

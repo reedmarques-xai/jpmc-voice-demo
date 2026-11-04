@@ -6,6 +6,61 @@ from datetime import date
 
 
 @dataclass(frozen=True)
+class Adjustment:
+    kind: str
+    amount: float
+    description: str
+    dispute_id: str | None = None
+
+
+@dataclass(frozen=True)
+class Deposit:
+    batch_date: date
+    gross_sales: float
+    fees: float
+    status: str
+    deposit_date: date
+    bank_account_last4: str = "4821"
+    adjustments: tuple[Adjustment, ...] = ()
+    status_note: str = ""
+
+
+@dataclass(frozen=True)
+class Dispute:
+    dispute_id: str
+    card_brand: str
+    amount: float
+    reason: str
+    transaction_date: date
+    received_date: date
+    response_due: date
+    status: str
+
+
+@dataclass(frozen=True)
+class Fee:
+    name: str
+    amount: float
+    explanation: str
+    recurring: bool = True
+    waivable: bool = False
+
+
+@dataclass(frozen=True)
+class Statement:
+    period: str
+    fees: tuple[Fee, ...]
+
+
+@dataclass(frozen=True)
+class BankChangeRequest:
+    new_account_last4: str
+    current_account_last4: str
+    requested_date: date
+    channel: str
+
+
+@dataclass(frozen=True)
 class Merchant:
     merchant_id: str
     name: str
@@ -13,7 +68,10 @@ class Merchant:
     postal_code: str
     collections_hold: bool = False
     fraud_hold_placed: date | None = None
-    bank_update_case_last4: str | None = None
+    bank_change: BankChangeRequest | None = None
+    deposits: tuple[Deposit, ...] = ()
+    disputes: tuple[Dispute, ...] = ()
+    statement: Statement | None = None
 
 
 @dataclass(frozen=True)
@@ -30,11 +88,38 @@ class Scenario:
 
 BLUE_FERN_ANI = "+12125550147"
 
+_NORMAL_DEPOSITS = (
+    Deposit(batch_date=date(2026, 11, 3), gross_sales=2481.40, fees=62.84, status="posted",
+            deposit_date=date(2026, 11, 4)),
+    Deposit(batch_date=date(2026, 11, 2), gross_sales=1976.25, fees=50.12, status="posted",
+            deposit_date=date(2026, 11, 3)),
+)
+
+_STANDARD_FEES = (
+    Fee("Processing fees", 214.37, "The per-transaction rate for card sales in October.", recurring=True),
+    Fee("Monthly service fee", 9.95, "The standard monthly account fee.", recurring=True),
+)
+
+_NORMAL_STATEMENT = Statement(period="October 2026", fees=_STANDARD_FEES)
+
 _blue_fern = dict(
     merchant_id="4472190",
     name="Blue Fern Café",
     ani=BLUE_FERN_ANI,
     postal_code="10013",
+    deposits=_NORMAL_DEPOSITS,
+    statement=_NORMAL_STATEMENT,
+)
+
+_CHARGEBACK = Dispute(
+    dispute_id="DP-88213",
+    card_brand="Visa",
+    amount=412.30,
+    reason="the cardholder says they didn't receive the merchandise",
+    transaction_date=date(2026, 10, 9),
+    received_date=date(2026, 11, 3),
+    response_due=date(2026, 11, 18),
+    status="open",
 )
 
 SCENARIOS: dict[str, Scenario] = {
@@ -102,7 +187,9 @@ SCENARIOS: dict[str, Scenario] = {
             now_et="2026-11-04T13:00:00",
             dialed_line="US_MAIN",
             ani=BLUE_FERN_ANI,
-            merchants=(Merchant(**_blue_fern, bank_update_case_last4="4821"),),
+            merchants=(Merchant(**_blue_fern, bank_change=BankChangeRequest(
+                new_account_last4="9034", current_account_last4="4821",
+                requested_date=date(2026, 11, 3), channel="online")),),
             expected_path="3C -> step 5 callback window -> create_callback_case -> main menu",
         ),
         Scenario(
@@ -150,6 +237,61 @@ SCENARIOS: dict[str, Scenario] = {
             expected_path="bilingual greeting -> French or English -> 3B recent",
         ),
         Scenario(
+            id="missing_deposit",
+            description="Last night's deposit was sent this morning and hasn't posted yet.",
+            now_et="2026-11-04T10:15:00",
+            dialed_line="US_MAIN",
+            ani=BLUE_FERN_ANI,
+            merchants=(Merchant(**{**_blue_fern, "deposits": (
+                Deposit(batch_date=date(2026, 11, 3), gross_sales=2418.56, fees=61.22, status="sent",
+                        deposit_date=date(2026, 11, 4),
+                        status_note="Sent to the bank this morning. Most banks post it by the end of the day."),
+                _NORMAL_DEPOSITS[1],
+            )}),),
+            expected_path="3D main menu -> 'my deposit didn't arrive' -> get_recent_deposits -> sent today, posts by end of day",
+        ),
+        Scenario(
+            id="short_deposit_chargeback",
+            description="Today's deposit is $412.30 short because of a Visa chargeback.",
+            now_et="2026-11-04T11:30:00",
+            dialed_line="US_MAIN",
+            ani=BLUE_FERN_ANI,
+            merchants=(Merchant(**{**_blue_fern, "disputes": (_CHARGEBACK,), "deposits": (
+                Deposit(batch_date=date(2026, 11, 3), gross_sales=3150.00, fees=78.75, status="posted",
+                        deposit_date=date(2026, 11, 4),
+                        adjustments=(Adjustment("chargeback", 412.30, "Visa chargeback", "DP-88213"),)),
+                _NORMAL_DEPOSITS[1],
+            )}),),
+            expected_path="3D main menu -> 'my deposit is short' -> deposit breakdown -> get_disputes -> respond by Nov 18 or transfer to disputes",
+        ),
+        Scenario(
+            id="unrecognized_bank_change",
+            description="A bank account change the merchant says they didn't request.",
+            now_et="2026-11-04T10:45:00",
+            dialed_line="US_MAIN",
+            ani=BLUE_FERN_ANI,
+            merchants=(Merchant(**_blue_fern, bank_change=BankChangeRequest(
+                new_account_last4="7716", current_account_last4="4821",
+                requested_date=date(2026, 11, 3), channel="online")),),
+            expected_path="3C bank change -> caller says they didn't request it -> report_unrecognized_bank_change -> transfer to fraud",
+        ),
+        Scenario(
+            id="fee_question",
+            description="October statement has a PCI non-compliance fee and a monthly minimum fee.",
+            now_et="2026-11-04T13:30:00",
+            dialed_line="US_MAIN",
+            ani=BLUE_FERN_ANI,
+            merchants=(Merchant(**{**_blue_fern, "statement": Statement(period="October 2026", fees=_STANDARD_FEES + (
+                Fee("PCI non-compliance fee", 19.95,
+                    "Charged because this year's PCI security questionnaire hasn't been completed. "
+                    "It stops once the questionnaire is done.", recurring=True),
+                Fee("Monthly minimum fee", 35.63,
+                    "Processing fees were $214.37 in October, below the $250 monthly minimum, "
+                    "so the $35.63 difference was charged.", recurring=True),
+            ))}),),
+            expected_path="3D main menu -> 'what's this fee' -> get_statement_fees -> explain -> offer statements team",
+        ),
+        Scenario(
             id="status_tool_failure",
             description="get_account_status is down.",
             now_et="2026-11-04T11:00:00",
@@ -165,14 +307,10 @@ SCENARIOS: dict[str, Scenario] = {
 DEFAULT_SCENARIO = "fraud_hold_recent"
 
 DEMO_MENU: tuple[tuple[int, str, str], ...] = (
-    (1, "fraud_hold_recent", "a recent fraud hold"),
-    (2, "fraud_hold_aged_open", "an older fraud hold that goes to a specialist"),
-    (3, "fraud_hold_aged_weekend", "an older fraud hold after hours"),
-    (4, "collections_hold_open", "a collections hold"),
-    (5, "bank_update_case", "a bank account update with a callback"),
-    (6, "no_issues", "an account with no issues"),
-    (7, "auth_postal_fallback", "a caller verified by zip code"),
-    (8, "auth_fail", "a caller who can't be verified"),
-    (9, "canada_line", "a call on the Canada line, in French or English"),
-    (10, "status_tool_failure", "a system outage"),
+    (1, "fraud_hold_recent", "a recent funds hold"),
+    (2, "fraud_hold_aged_open", "a funds hold that's been in review for a while"),
+    (3, "missing_deposit", "a deposit that hasn't arrived"),
+    (4, "fee_question", "a fee they don't recognize"),
+    (5, "bank_update_case", "updating their bank account"),
+    (6, "unrecognized_bank_change", "a bank account change they didn't make"),
 )

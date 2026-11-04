@@ -90,7 +90,10 @@ class FlowTests(unittest.TestCase):
         b = authed("bank_update_case")
         s = b.call("get_account_status", {"merchant_id": BLUE_FERN})
         self.assertFalse(s["fraud_hold"]["active"])
-        self.assertEqual(s["bank_account_update_case"], {"open": True, "bank_account_last4": "4821"})
+        bank = s["bank_account_update_case"]
+        self.assertEqual((bank["open"], bank["bank_account_last4"], bank["current_account_last4"]),
+                         (True, "9034", "4821"))
+        self.assertEqual(bank["requested_date_spoken"], "Tuesday, November 3rd")
         case = b.call("create_callback_case", {"merchant_id": BLUE_FERN, "window": "midday"})
         self.assertEqual((case["category"], case["type"], case["origin"]),
                          ("ECC-Advanced Merchant Support", "DDA Research", "IVR"))
@@ -106,6 +109,47 @@ class FlowTests(unittest.TestCase):
 
     def test_canada_line(self):
         self.assertEqual(MockBackend("canada_line").call("get_call_context")["dialed_line"], "CA_MAIN")
+
+    def test_missing_deposit(self):
+        d = authed("missing_deposit").call("get_recent_deposits", {"merchant_id": BLUE_FERN})["deposits"][0]
+        self.assertEqual((d["status"], d["net_deposit"], d["deposit_date_spoken"]),
+                         ("sent", "$2,357.34", "Wednesday, November 4th"))
+        self.assertIn("end of the day", d["status_note"])
+
+    def test_short_deposit_chargeback(self):
+        b = authed("short_deposit_chargeback")
+        d = b.call("get_recent_deposits", {"merchant_id": BLUE_FERN})["deposits"][0]
+        self.assertEqual((d["gross_sales"], d["fees"], d["net_deposit"]), ("$3,150.00", "$78.75", "$2,658.95"))
+        self.assertEqual(d["adjustments"][0]["dispute_id"], "DP-88213")
+        dispute = b.call("get_disputes", {"merchant_id": BLUE_FERN})["disputes"][0]
+        self.assertEqual((dispute["amount"], dispute["response_due_spoken"], dispute["days_to_respond"]),
+                         ("$412.30", "Wednesday, November 18th", 14))
+
+    def test_unrecognized_bank_change(self):
+        b = authed("unrecognized_bank_change")
+        r = b.call("report_unrecognized_bank_change", {"merchant_id": BLUE_FERN})
+        self.assertEqual((r["blocked_account_last4"], r["deposits_continue_to_last4"]), ("7716", "4821"))
+        again = b.call("report_unrecognized_bank_change", {"merchant_id": BLUE_FERN})
+        self.assertEqual(again["case_id"], r["case_id"])
+        self.assertEqual(len(b.cases), 1)
+        status = b.call("get_account_status", {"merchant_id": BLUE_FERN})["bank_account_update_case"]
+        self.assertEqual(status["status"], "on_hold_fraud_review")
+        self.assertTrue(b.call("transfer", {"queue": "fraud", "reason": "x"})["transferred"])
+
+    def test_report_bank_change_without_pending_change_errors(self):
+        self.assertIn("error", authed("no_issues").call("report_unrecognized_bank_change", {"merchant_id": BLUE_FERN}))
+
+    def test_fee_question(self):
+        fees = authed("fee_question").call("get_statement_fees", {"merchant_id": BLUE_FERN})
+        names = {f["name"]: f["amount"] for f in fees["fees"]}
+        self.assertEqual(names["PCI non-compliance fee"], "$19.95")
+        self.assertEqual(names["Monthly minimum fee"], "$35.63")
+        self.assertEqual(fees["total_fees"], "$279.90")
+
+    def test_new_tools_require_auth(self):
+        b = MockBackend("short_deposit_chargeback")
+        for tool in ("get_recent_deposits", "get_disputes", "get_statement_fees", "report_unrecognized_bank_change"):
+            self.assertIn("error", b.call(tool, {"merchant_id": BLUE_FERN}), tool)
 
     def test_every_scenario_loads(self):
         for sid in SCENARIOS:

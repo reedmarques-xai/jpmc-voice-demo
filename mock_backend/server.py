@@ -130,22 +130,11 @@ def select_demo_scenario(store: CallStore, call_id: str, choice: str) -> dict[st
     scenario_id = by_number.get(key.removeprefix("option_").removeprefix("number_"), key)
     if scenario_id not in SCENARIOS:
         options = "; ".join(f"{n} = {label}" for n, _, label in DEMO_MENU)
-        return {"error": f"Unknown demo option '{choice}'. Ask the caller to pick again: {options}.",
+        return {"error": f"Unknown option '{choice}'. Read the options to the caller again: {options}.",
                 "tool_ran": False}
-    backend = store.reset(call_id, scenario_id)
-    s = backend.scenario
-    merchant = s.merchants[0]
-    label = next((label for _, sid, label in DEMO_MENU if sid == s.id), s.description)
-    return {
-        "selected": True,
-        "scenario": s.id,
-        "label": label,
-        "demo_merchant_id": merchant.merchant_id,
-        "demo_merchant_id_spoken": " ".join(merchant.merchant_id[:3]) + ", " + " ".join(merchant.merchant_id[3:]),
-        "demo_postal_code": merchant.postal_code,
-        "phone_recognized": any(m.ani == s.ani for m in s.merchants),
-        "expected_path": s.expected_path,
-    }
+    s = store.reset(call_id, scenario_id).scenario
+    reason = next((label for _, sid, label in DEMO_MENU if sid == s.id), s.description)
+    return {"selected": True, "scenario": s.id, "caller_reason": reason}
 
 
 def make_handler(store: CallStore, api_key: str | None, public_base_url: str | None):

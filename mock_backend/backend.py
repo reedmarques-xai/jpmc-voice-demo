@@ -47,6 +47,10 @@ def _ordinal(n: int) -> str:
     return f"{n}{suffix}"
 
 
+def _money(amount: float) -> str:
+    return f"${amount:,.2f}"
+
+
 def spoken_date(d) -> str:
     return f"{d.strftime('%A, %B')} {_ordinal(d.day)}"
 
@@ -58,6 +62,7 @@ class MockBackend:
         self.scenario: Scenario = SCENARIOS[scenario_id]
         self._now = now_et or datetime.fromisoformat(self.scenario.now_et).replace(tzinfo=ET)
         self.authenticated_merchant_id: str | None = None
+        self.bank_change_reported = False
         self.cases: list[dict[str, Any]] = []
         self.transfers: list[dict[str, Any]] = []
         self.log: list[dict[str, Any]] = []
@@ -68,6 +73,10 @@ class MockBackend:
             "is_business_hours": self.is_business_hours,
             "create_callback_case": self.create_callback_case,
             "transfer": self.transfer,
+            "get_recent_deposits": self.get_recent_deposits,
+            "get_disputes": self.get_disputes,
+            "get_statement_fees": self.get_statement_fees,
+            "report_unrecognized_bank_change": self.report_unrecognized_bank_change,
         }
 
     def call(self, name: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -135,8 +144,15 @@ class MockBackend:
                 "days_since_placed": (self._now.date() - m.fraud_hold_placed).days,
             }
         bank: dict[str, Any] = {"open": False}
-        if m.bank_update_case_last4:
-            bank = {"open": True, "bank_account_last4": m.bank_update_case_last4}
+        if m.bank_change:
+            bank = {
+                "open": True,
+                "bank_account_last4": m.bank_change.new_account_last4,
+                "current_account_last4": m.bank_change.current_account_last4,
+                "requested_date_spoken": spoken_date(m.bank_change.requested_date),
+                "requested_via": m.bank_change.channel,
+                "status": "on_hold_fraud_review" if self.bank_change_reported else "pending_verification",
+            }
         return {
             "merchant_id": m.merchant_id,
             "collections_hold": {"active": m.collections_hold},
@@ -164,6 +180,76 @@ class MockBackend:
         }
         self.cases.append(case)
         return {"created": True, **case}
+
+    def get_recent_deposits(self, merchant_id: str) -> dict[str, Any]:
+        m = self._require_auth(merchant_id)
+        deposits = []
+        for d in sorted(m.deposits, key=lambda d: d.batch_date, reverse=True):
+            deducted = sum(a.amount for a in d.adjustments)
+            deposits.append({
+                "batch_date_spoken": spoken_date(d.batch_date),
+                "gross_sales": _money(d.gross_sales),
+                "fees": _money(d.fees),
+                "adjustments": [{"type": a.kind, "amount": _money(a.amount), "description": a.description,
+                                 **({"dispute_id": a.dispute_id} if a.dispute_id else {})}
+                                for a in d.adjustments],
+                "net_deposit": _money(d.gross_sales - d.fees - deducted),
+                "status": d.status,
+                "deposit_date_spoken": spoken_date(d.deposit_date),
+                "bank_account_last4": d.bank_account_last4,
+                **({"status_note": d.status_note} if d.status_note else {}),
+            })
+        return {"deposits": deposits}
+
+    def get_disputes(self, merchant_id: str) -> dict[str, Any]:
+        m = self._require_auth(merchant_id)
+        return {
+            "count": len(m.disputes),
+            "disputes": [{
+                "dispute_id": d.dispute_id,
+                "card_brand": d.card_brand,
+                "amount": _money(d.amount),
+                "reason": d.reason,
+                "transaction_date_spoken": spoken_date(d.transaction_date),
+                "received_date_spoken": spoken_date(d.received_date),
+                "response_due_spoken": spoken_date(d.response_due),
+                "days_to_respond": (d.response_due - self._now.date()).days,
+                "status": d.status,
+            } for d in m.disputes],
+        }
+
+    def get_statement_fees(self, merchant_id: str) -> dict[str, Any]:
+        m = self._require_auth(merchant_id)
+        if not m.statement:
+            raise ToolError("No statement available.")
+        return {
+            "statement_period": m.statement.period,
+            "fees": [{"name": f.name, "amount": _money(f.amount), "explanation": f.explanation,
+                      "recurring": f.recurring} for f in m.statement.fees],
+            "total_fees": _money(sum(f.amount for f in m.statement.fees)),
+        }
+
+    def report_unrecognized_bank_change(self, merchant_id: str) -> dict[str, Any]:
+        m = self._require_auth(merchant_id)
+        if not m.bank_change:
+            raise ToolError("There is no pending bank account change on this account.")
+        if not self.bank_change_reported:
+            self.bank_change_reported = True
+            self.cases.append({
+                "case_id": f"FR-{self._now:%y%m%d}-{len(self.cases) + 1:04d}",
+                "merchant_id": m.merchant_id,
+                "category": "Fraud",
+                "type": "Unauthorized Bank Account Change",
+                "origin": "IVR",
+            })
+        case = next(c for c in self.cases if c["category"] == "Fraud")
+        return {
+            "reported": True,
+            "case_id": case["case_id"],
+            "change_status": "on_hold_fraud_review",
+            "blocked_account_last4": m.bank_change.new_account_last4,
+            "deposits_continue_to_last4": m.bank_change.current_account_last4,
+        }
 
     def transfer(self, queue: str, reason: str) -> dict[str, Any]:
         if queue not in SPECIALIST_QUEUES | SERVICE_QUEUES:
