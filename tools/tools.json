@@ -1,8 +1,23 @@
 [
   {
     "type": "function",
+    "name": "select_demo_scenario",
+    "description": "Demo setup only. Call this once at the very start of the call, right after the caller picks a demo path from the opening list, and before get_call_context. Pass the number or path they chose. It starts a fresh demo account for that path and returns demo_merchant_id_spoken; tell the caller 'For this demo, use Merchant ID {demo_merchant_id_spoken}', then call get_call_context and begin the normal Chase greeting. If it returns an error, read the list again. Never call it again later in the call.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "scenario": {
+          "type": "string",
+          "description": "The number the caller picked, 1 to 10: 1 recent fraud hold, 2 older fraud hold that goes to a specialist, 3 older fraud hold after hours, 4 collections hold, 5 bank account update with a callback, 6 no issues, 7 caller verified by zip code, 8 caller who can't be verified, 9 Canada line in French or English, 10 system outage."
+        }
+      },
+      "required": ["scenario"]
+    }
+  },
+  {
+    "type": "function",
     "name": "get_call_context",
-    "description": "Call this first, exactly once, as soon as the call connects and before you say anything. Use dialed_line to pick the greeting (CA_MAIN means play the bilingual French/English greeting; US_MAIN means the standard English greeting), keep ani for the first authentication attempt, and use current_time_et and day_of_week for any time-based decisions. Never read the phone number or these field names aloud.",
+    "description": "Call this exactly once, right after select_demo_scenario succeeds and before the Chase greeting. Use dialed_line to pick the greeting (CA_MAIN means play the bilingual French/English greeting; US_MAIN means the standard English greeting), keep ani for the first authentication attempt, and use current_time_et and day_of_week for any time-based decisions. Never read the phone number or these field names aloud.",
     "parameters": {
       "type": "object",
       "properties": {},

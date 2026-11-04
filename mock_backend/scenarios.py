@@ -163,3 +163,16 @@ SCENARIOS: dict[str, Scenario] = {
 }
 
 DEFAULT_SCENARIO = "fraud_hold_recent"
+
+DEMO_MENU: tuple[tuple[int, str, str], ...] = (
+    (1, "fraud_hold_recent", "a recent fraud hold"),
+    (2, "fraud_hold_aged_open", "an older fraud hold that goes to a specialist"),
+    (3, "fraud_hold_aged_weekend", "an older fraud hold after hours"),
+    (4, "collections_hold_open", "a collections hold"),
+    (5, "bank_update_case", "a bank account update with a callback"),
+    (6, "no_issues", "an account with no issues"),
+    (7, "auth_postal_fallback", "a caller verified by zip code"),
+    (8, "auth_fail", "a caller who can't be verified"),
+    (9, "canada_line", "a call on the Canada line, in French or English"),
+    (10, "status_tool_failure", "a system outage"),
+)

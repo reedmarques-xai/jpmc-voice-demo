@@ -17,7 +17,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from .backend import MockBackend
-from .scenarios import DEFAULT_SCENARIO, SCENARIOS
+from .scenarios import DEFAULT_SCENARIO, DEMO_MENU, SCENARIOS
 from .session import build_session_update, load_tools
 
 MAX_CALLS = 500
@@ -121,6 +121,31 @@ def _parse_body(raw: bytes, content_type: str) -> Any:
     if text.startswith(("{", "[", '"')) or "application/x-www-form-urlencoded" not in content_type:
         return json.loads(text)
     return {k: v[0] for k, v in parse_qs(text).items()}
+
+
+def select_demo_scenario(store: CallStore, call_id: str, choice: str) -> dict[str, Any]:
+    """Start a fresh demo call on the chosen scenario. Accepts a menu number or scenario ID."""
+    key = choice.strip().lower().replace(" ", "_")
+    by_number = {str(n): sid for n, sid, _ in DEMO_MENU}
+    scenario_id = by_number.get(key.removeprefix("option_").removeprefix("number_"), key)
+    if scenario_id not in SCENARIOS:
+        options = "; ".join(f"{n} = {label}" for n, _, label in DEMO_MENU)
+        return {"error": f"Unknown demo option '{choice}'. Ask the caller to pick again: {options}.",
+                "tool_ran": False}
+    backend = store.reset(call_id, scenario_id)
+    s = backend.scenario
+    merchant = s.merchants[0]
+    label = next((label for _, sid, label in DEMO_MENU if sid == s.id), s.description)
+    return {
+        "selected": True,
+        "scenario": s.id,
+        "label": label,
+        "demo_merchant_id": merchant.merchant_id,
+        "demo_merchant_id_spoken": " ".join(merchant.merchant_id[:3]) + ", " + " ".join(merchant.merchant_id[3:]),
+        "demo_postal_code": merchant.postal_code,
+        "phone_recognized": any(m.ani == s.ani for m in s.merchants),
+        "expected_path": s.expected_path,
+    }
 
 
 def make_handler(store: CallStore, api_key: str | None, public_base_url: str | None):
@@ -269,6 +294,8 @@ def make_handler(store: CallStore, api_key: str | None, public_base_url: str | N
                     "tool_ran": False,
                     "missing_arguments": missing,
                 }
+            elif name == "select_demo_scenario":
+                result = select_demo_scenario(store, call_id, args["scenario"])
             else:
                 result = store.get(call_id, scenario).call(name, args)
             entry["result"] = result

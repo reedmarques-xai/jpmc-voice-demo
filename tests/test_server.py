@@ -45,7 +45,7 @@ class OpenServerTests(ServerTestCase):
     def test_tool_listing_has_one_url_per_tool(self):
         status, tools = self.request("GET", "/tools")
         self.assertEqual(status, 200)
-        self.assertEqual(len(tools), 6)
+        self.assertEqual(len(tools), 7)
         for t in tools:
             self.assertEqual(t["url"], f"{self.base}/tools/{t['name']}")
             self.assertEqual(t["method"], "POST")
@@ -104,6 +104,22 @@ class OpenServerTests(ServerTestCase):
         self.assertEqual(entry["raw_body"], '{"hello": "world"}')
         self.assertNotIn("Authorization", entry["headers"])
 
+    def test_select_demo_scenario_by_number_resets_call(self):
+        self.request("POST", "/tools/authenticate_merchant", AUTH_ARGS)
+        r = self.request("POST", "/tools/select_demo_scenario", {"scenario": "5"})[1]
+        self.assertEqual((r["scenario"], r["demo_merchant_id_spoken"]), ("bank_update_case", "4 4 7, 2 1 9 0"))
+        self.assertIn("error", self.request("POST", "/tools/get_account_status", {"merchant_id": "4472190"})[1])
+        self.request("POST", "/tools/authenticate_merchant", AUTH_ARGS)
+        status = self.request("POST", "/tools/get_account_status", {"merchant_id": "4472190"})[1]
+        self.assertTrue(status["bank_account_update_case"]["open"])
+
+    def test_select_demo_scenario_canada_and_bad_choice(self):
+        r = self.request("POST", "/tools/select_demo_scenario", {"scenario": "9"})[1]
+        self.assertEqual(r["demo_merchant_id"], "8830417")
+        self.assertEqual(self.request("POST", "/tools/get_call_context")[1]["dialed_line"], "CA_MAIN")
+        bad = self.request("POST", "/tools/select_demo_scenario", {"scenario": "42"})[1]
+        self.assertFalse(bad["tool_ran"])
+
     def test_reset_clears_auth(self):
         h = {"X-Call-Id": "r"}
         self.request("POST", "/tools/authenticate_merchant", AUTH_ARGS, h)
@@ -124,7 +140,8 @@ class ApiKeyTests(ServerTestCase):
     def test_listing_uses_public_url_and_stays_open(self):
         status, tools = self.request("GET", "/tools")
         self.assertEqual(status, 200)
-        self.assertEqual(tools[0]["url"], "https://tools.example.com/tools/get_call_context")
+        urls = {t["url"] for t in tools}
+        self.assertIn("https://tools.example.com/tools/get_call_context", urls)
         self.assertEqual(self.request("GET", "/health")[0], 200)
 
 

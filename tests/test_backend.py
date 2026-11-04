@@ -19,7 +19,7 @@ def authed(scenario_id: str, **second_factor) -> MockBackend:
 class ToolSchemaTests(unittest.TestCase):
     def test_schemas_match_backend(self):
         tools = {t["name"]: t for t in load_tools()}
-        self.assertEqual(set(tools), set(MockBackend()._tools))
+        self.assertEqual(set(tools) - {"select_demo_scenario"}, set(MockBackend()._tools))
         queues = set(tools["transfer"]["parameters"]["properties"]["queue"]["enum"])
         self.assertEqual(queues, SPECIALIST_QUEUES | SERVICE_QUEUES)
 
