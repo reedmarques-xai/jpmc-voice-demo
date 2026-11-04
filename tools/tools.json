@@ -2,7 +2,7 @@
   {
     "type": "function",
     "name": "get_call_context",
-    "description": "Call once at the start of every call. Returns which number was dialed (dialed_line is CA_MAIN for the Canada main line, otherwise US_MAIN), the caller's phone number (ani), and the current Eastern Time (current_time_et, day_of_week).",
+    "description": "Call this first, exactly once, as soon as the call connects and before you say anything. Use dialed_line to pick the greeting (CA_MAIN means play the bilingual French/English greeting; US_MAIN means the standard English greeting), keep ani for the first authentication attempt, and use current_time_et and day_of_week for any time-based decisions. Never read the phone number or these field names aloud.",
     "parameters": {
       "type": "object",
       "properties": {},
@@ -12,7 +12,7 @@
   {
     "type": "function",
     "name": "authenticate_merchant",
-    "description": "Verify the caller. Always pass merchant_id plus exactly one second factor: first try ani (the caller's phone number from get_call_context); if that fails, try postal_code. Returns authenticated true/false and, on success, merchant_name. On failure it never says which value didn't match.",
+    "description": "Call this after the caller gives their Merchant ID and confirms your read-back. First attempt: pass merchant_id with ani from get_call_context, without asking the caller anything else. If that returns authenticated false, ask for the business zip or postal code and call again with merchant_id and postal_code. Do not call more than twice per call; after two failures, say you couldn't identify them and go to the main menu. On success, greet them by merchant_name and immediately call get_account_status. Never tell the caller which value didn't match.",
     "parameters": {
       "type": "object",
       "properties": {
@@ -35,7 +35,7 @@
   {
     "type": "function",
     "name": "get_account_status",
-    "description": "Only call after authenticate_merchant succeeds. Returns collections_hold.active, fraud_hold (active, placed_date, placed_date_spoken, days_since_placed), and bank_account_update_case (open, bank_account_last4). Use placed_date_spoken verbatim when reading the hold date. A fraud hold is 'recent' when days_since_placed is 4 or less.",
+    "description": "Call this once, right after authenticate_merchant succeeds, and never before. Check the result in order and act on the first match: (1) collections_hold.active is true: call is_business_hours('collections'); if open, transfer to collections, otherwise continue to (2). (2) fraud_hold.active is true: if days_since_placed is 4 or less, read the recent-hold message using placed_date_spoken exactly as given; if more than 4, call is_business_hours('fraud') to choose between transferring to fraud and the email message. (3) bank_account_update_case.open is true: offer the verification callback. (4) Nothing applies: go to the main menu. Never explain why a hold exists or predict when funds will be released.",
     "parameters": {
       "type": "object",
       "properties": {
@@ -50,7 +50,7 @@
   {
     "type": "function",
     "name": "is_business_hours",
-    "description": "Returns open true/false for a specialist queue. Collections and Fraud specialists work Monday through Friday, 8 AM to 6 PM Eastern Time. Also returns hours_spoken for telling callers the hours.",
+    "description": "Call this before any transfer to collections or fraud, and before offering the 'specialist' option. Specifically: when there is a collections hold; when a fraud hold is more than 4 days old; after any funds hold message, to decide whether to offer 'say specialist or press 2'; and when the caller asks for a person. If open is false, don't transfer or offer a specialist; tell the caller the hours using hours_spoken and offer the main menu. Don't call this for main menu service transfers.",
     "parameters": {
       "type": "object",
       "properties": {
@@ -65,7 +65,7 @@
   {
     "type": "function",
     "name": "create_callback_case",
-    "description": "Open a bank account update verification callback case (category 'ECC-Advanced Merchant Support', type 'DDA Research', origin 'IVR') for the caller's chosen window. Returns case_id and window_spoken to use in the confirmation.",
+    "description": "Call this only when get_account_status showed an open bank account update case, the caller said yes to choosing a callback time, and they picked a window: 'morning' or 1, 'midday' or 2, 'afternoon' or 3. Don't call it if they say skip, no, press star, or don't answer. Call it once per call. Then confirm with: 'Expect a call within the next 2 business days, between {window_spoken}.' Don't read the case_id aloud unless the caller asks for a reference number.",
     "parameters": {
       "type": "object",
       "properties": {
@@ -85,7 +85,7 @@
   {
     "type": "function",
     "name": "transfer",
-    "description": "Transfer the call. Use collections or fraud for specialist transfers (only during business hours); use the other queues for main menu services. Say the handoff line to the caller before calling this.",
+    "description": "Call this to end your part of the call and hand the caller off, always after you've said the handoff line out loud. Use 'collections' for a collections hold during business hours. Use 'fraud' for a fraud hold more than 4 days old during business hours, when the caller says 'specialist' or presses 2 after a hold message, or when they ask for a person during business hours. Use a main menu queue once the caller's need is clear and you've confirmed it in one sentence ('Okay, connecting you with terminal support'). Never transfer to collections or fraud without is_business_hours returning open true. Call it once; after it succeeds, stop talking.",
     "parameters": {
       "type": "object",
       "properties": {
@@ -101,11 +101,11 @@
             "voice_authorization",
             "government_public_sector"
           ],
-          "description": "Main menu keys: batch_transaction_deposit=2, terminal_support=3, statements_account_changes=4, disputes_chargebacks=5, voice_authorization=6, government_public_sector=8."
+          "description": "collections and fraud are specialist queues. Main menu queues, with their keypad numbers: batch_transaction_deposit (2: batch, transaction, or deposit questions), terminal_support (3: terminal password, troubleshooting, paper supplies), statements_account_changes (4: statements, tax documents, authorized contacts, account information), disputes_chargebacks (5: disputes, chargebacks, 'Request for Transaction Documentation' letters), voice_authorization (6), government_public_sector (8: government or public sector customers)."
         },
         "reason": {
           "type": "string",
-          "description": "One-line summary for the receiving specialist, e.g. 'Authenticated merchant 4472190, fraud hold placed Oct 28, 7 days in review.'"
+          "description": "One line for the receiving agent: whether the caller was authenticated, the Merchant ID and business name, what you found, and what the caller wants. Example: 'Authenticated 4472190 Blue Fern Café; fraud hold placed Oct 28, 7 days in review; caller asked for specialist.' Never include full card or bank account numbers."
         }
       },
       "required": ["queue", "reason"]

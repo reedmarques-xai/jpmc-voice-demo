@@ -1,18 +1,20 @@
 """Usage:
     python -m mock_backend scenarios
     python -m mock_backend repl [--scenario ID]
-    python -m mock_backend serve [--scenario ID] [--port 8787]
+    python -m mock_backend serve [--scenario ID] [--host 127.0.0.1] [--port 8787]
     python -m mock_backend session [--voice Ara]
+
+serve also reads HOST, PORT, DEFAULT_SCENARIO, API_KEY, and PUBLIC_BASE_URL from the environment.
 """
 
 import argparse
 import json
+import os
 import shlex
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
 
 from .backend import MockBackend
 from .scenarios import DEFAULT_SCENARIO, SCENARIOS
+from .server import run
 from .session import build_session_update
 
 
@@ -58,65 +60,7 @@ def cmd_repl(args: argparse.Namespace) -> None:
 
 
 def cmd_serve(args: argparse.Namespace) -> None:
-    state = {"backend": MockBackend(args.scenario)}
-
-    class Handler(BaseHTTPRequestHandler):
-        def _send(self, status: int, body: object) -> None:
-            data = json.dumps(body, ensure_ascii=False).encode()
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(data)))
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
-            self.wfile.write(data)
-
-        def do_OPTIONS(self) -> None:
-            self.send_response(204)
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-            self.send_header("Access-Control-Allow-Headers", "Content-Type")
-            self.end_headers()
-
-        def do_GET(self) -> None:
-            path = urlparse(self.path).path
-            b = state["backend"]
-            if path == "/scenarios":
-                self._send(200, [{"id": s.id, "description": s.description, "expected": s.expected_path,
-                                  "active": s.id == b.scenario.id} for s in SCENARIOS.values()])
-            elif path == "/state":
-                self._send(200, {"scenario": b.scenario.id, "authenticated": b.authenticated_merchant_id,
-                                 "cases": b.cases, "transfers": b.transfers, "log": b.log})
-            elif path == "/session":
-                self._send(200, build_session_update())
-            else:
-                self._send(404, {"error": "Not found"})
-
-        def do_POST(self) -> None:
-            url = urlparse(self.path)
-            length = int(self.headers.get("Content-Length") or 0)
-            raw = self.rfile.read(length) if length else b""
-            if url.path == "/reset":
-                scenario = parse_qs(url.query).get("scenario", [state["backend"].scenario.id])[0]
-                try:
-                    state["backend"] = MockBackend(scenario)
-                except KeyError as exc:
-                    return self._send(400, {"error": str(exc)})
-                return self._send(200, {"scenario": scenario})
-            if url.path.startswith("/tools/"):
-                try:
-                    tool_args = json.loads(raw) if raw else {}
-                except json.JSONDecodeError:
-                    return self._send(400, {"error": "Body must be JSON"})
-                return self._send(200, state["backend"].call(url.path.removeprefix("/tools/"), tool_args))
-            self._send(404, {"error": "Not found"})
-
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
-    print(f"Mock tools on http://127.0.0.1:{args.port} (scenario: {args.scenario})")
-    print("POST /tools/<name> with JSON args | POST /reset?scenario=<id> | GET /scenarios /state /session")
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
+    run(args.host, args.port, args.scenario)
 
 
 def cmd_session(args: argparse.Namespace) -> None:
@@ -131,8 +75,9 @@ def main() -> None:
     p.add_argument("--scenario", default=DEFAULT_SCENARIO, choices=SCENARIOS)
     p.set_defaults(func=cmd_repl)
     p = sub.add_parser("serve")
-    p.add_argument("--scenario", default=DEFAULT_SCENARIO, choices=SCENARIOS)
-    p.add_argument("--port", type=int, default=8787)
+    p.add_argument("--scenario", default=os.environ.get("DEFAULT_SCENARIO", DEFAULT_SCENARIO), choices=SCENARIOS)
+    p.add_argument("--host", default=os.environ.get("HOST", "127.0.0.1"))
+    p.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8787")))
     p.set_defaults(func=cmd_serve)
     p = sub.add_parser("session")
     p.add_argument("--voice", default="Ara")
