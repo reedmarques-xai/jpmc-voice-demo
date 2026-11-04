@@ -121,6 +121,12 @@ class OpenServerTests(ServerTestCase):
             bad = self.request("POST", "/tools/select_demo_scenario", {"scenario": choice})[1]
             self.assertFalse(bad["tool_ran"])
 
+    def test_select_demo_scenario_from_query(self):
+        r = self.request("POST", "/tools/select_demo_scenario?scenario=3")[1]
+        self.assertEqual(r["scenario"], "missing_deposit")
+        r = self.request("POST", "/tools/select_demo_scenario?scenario=fee_question")[1]
+        self.assertEqual(r["scenario"], "fee_question")
+
     def test_demo_menu_numbers(self):
         expected = {"1": "fraud_hold_recent", "2": "fraud_hold_aged_open", "3": "missing_deposit",
                     "4": "fee_question", "5": "bank_update_case", "6": "unrecognized_bank_change"}

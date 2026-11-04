@@ -241,6 +241,8 @@ def make_handler(store: CallStore, api_key: str | None, public_base_url: str | N
                 return self._send(401, {"error": "Unauthorized"})
             length = int(self.headers.get("Content-Length") or 0)
             raw = self.rfile.read(length) if length else b""
+            if path == "/tools/select_demo_scenario":
+                return self._handle_tool("select_demo_scenario", raw, self._query().get("scenario"))
             try:
                 scenario = self._scenario()
             except ValueError as exc:
@@ -272,6 +274,9 @@ def make_handler(store: CallStore, api_key: str | None, public_base_url: str | N
                 return self._send(400, result)
             call_id = self.headers.get("X-Call-Id") or self._query().get("call_id") or find_call_id(body) or "default"
             args = extract_args(tool, body, self._query())
+            if name == "select_demo_scenario" and not args.get("scenario") and scenario:
+                args["scenario"] = scenario
+                scenario = None
             missing = [p for p in tool["parameters"].get("required", []) if not args.get(p)]
             entry.update(call_id=call_id, parsed_args=args)
             if missing:
