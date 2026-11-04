@@ -71,6 +71,39 @@ class OpenServerTests(ServerTestCase):
         self.assertTrue(self.request("POST", "/tools/authenticate_merchant",
                                      {"arguments": AUTH_ARGS}, {"X-Call-Id": "w"})[1]["authenticated"])
 
+    def test_nested_platform_payloads(self):
+        payloads = [
+            {"message": {"toolCallList": [{"id": "t1", "function": {"name": "authenticate_merchant",
+                                                                    "arguments": AUTH_ARGS}}]}},
+            {"tool_call": {"function": {"arguments": json.dumps(AUTH_ARGS)}}},
+            {"parameters": {"merchant_id": 4472190, "ani": "+12125550147", "extra": "ignored"}},
+            {"name": "authenticate_merchant", "input": AUTH_ARGS},
+        ]
+        for i, payload in enumerate(payloads):
+            result = self.request("POST", "/tools/authenticate_merchant", payload, {"X-Call-Id": f"n{i}"})[1]
+            self.assertTrue(result.get("authenticated"), (payload, result))
+
+    def test_query_params_and_body_call_id(self):
+        r = self.request("POST", "/tools/authenticate_merchant?merchant_id=4472190&ani=%2B12125550147",
+                         {"conversation_id": "conv-9"})[1]
+        self.assertTrue(r["authenticated"])
+        status = self.request("POST", "/tools/get_account_status", {"merchant_id": "4472190",
+                                                                    "conversation_id": "conv-9"})[1]
+        self.assertIn("fraud_hold", status)
+
+    def test_missing_args_explains_tool_did_not_run(self):
+        status, result = self.request("POST", "/tools/authenticate_merchant", {})
+        self.assertEqual(status, 200)
+        self.assertFalse(result["tool_ran"])
+        self.assertEqual(result["missing_arguments"], ["merchant_id"])
+        self.assertNotIn("authenticated", result)
+
+    def test_debug_requests_records_raw_body(self):
+        self.request("POST", "/tools/get_call_context", {"hello": "world"}, {"Authorization": "Bearer x"})
+        entry = self.request("GET", "/debug/requests")[1][0]
+        self.assertEqual(entry["raw_body"], '{"hello": "world"}')
+        self.assertNotIn("Authorization", entry["headers"])
+
     def test_reset_clears_auth(self):
         h = {"X-Call-Id": "r"}
         self.request("POST", "/tools/authenticate_merchant", AUTH_ARGS, h)

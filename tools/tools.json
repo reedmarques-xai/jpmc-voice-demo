@@ -12,7 +12,7 @@
   {
     "type": "function",
     "name": "authenticate_merchant",
-    "description": "Call this after the caller gives their Merchant ID and confirms your read-back. First attempt: pass merchant_id with ani from get_call_context, without asking the caller anything else. If that returns authenticated false, ask for the business zip or postal code and call again with merchant_id and postal_code. Do not call more than twice per call; after two failures, say you couldn't identify them and go to the main menu. On success, greet them by merchant_name and immediately call get_account_status. Never tell the caller which value didn't match.",
+    "description": "Call this after the caller gives their Merchant ID and confirms your read-back. First attempt: pass merchant_id with ani from get_call_context, without asking the caller anything else. If that returns authenticated false, ask for the business zip or postal code and call again with merchant_id and postal_code. Do not call more than twice per call; after two failures, say you couldn't identify them and go to the main menu. On success, greet them by merchant_name and immediately call get_account_status. The caller is verified ONLY when the result contains authenticated: true; any other result, including an error, means not verified, so never say the account was found, never call get_account_status, and never share account details. If the result has tool_ran: false or an error, it is a system problem, not a failed try: call again with merchant_id and the second factor filled in. Never tell the caller their Merchant ID or any other value is incorrect or which value didn't match.",
     "parameters": {
       "type": "object",
       "properties": {

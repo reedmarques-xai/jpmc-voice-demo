@@ -1,8 +1,8 @@
 """HTTP server exposing each tool as its own endpoint.
 
 Per-call state (authentication, cases, transfers) is keyed by a call ID taken
-from the X-Call-Id header or ?call_id= query param; requests without one share
-the "default" call. The scenario comes from ?scenario= or X-Scenario, falling
+from the X-Call-Id header, the ?call_id= query param, or a call/conversation/session
+ID field in the request body; requests without one share the "default" call. The scenario comes from ?scenario= or X-Scenario, falling
 back to the DEFAULT_SCENARIO env var.
 """
 
@@ -10,7 +10,8 @@ import hmac
 import json
 import os
 import threading
-from collections import OrderedDict
+from collections import OrderedDict, deque
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -20,6 +21,9 @@ from .scenarios import DEFAULT_SCENARIO, SCENARIOS
 from .session import build_session_update, load_tools
 
 MAX_CALLS = 500
+MAX_LOGGED_REQUESTS = 50
+MAX_LOGGED_BODY = 4000
+REDACTED_HEADERS = {"authorization", "x-api-key", "cookie"}
 
 TOOLS = {t["name"]: t for t in load_tools()}
 
@@ -47,19 +51,81 @@ class CallStore:
         return self.get(call_id, scenario)
 
 
-def _unwrap_args(body: Any) -> dict[str, Any]:
-    """Accept either the raw arguments object or a wrapper like {"arguments": {...}}
-    or {"arguments": "<json string>"}, which some voice platforms send."""
-    if isinstance(body, dict) and "arguments" in body:
-        body = body["arguments"]
-        if isinstance(body, str):
-            body = json.loads(body) if body.strip() else {}
-    if not isinstance(body, dict):
-        raise ValueError("Tool arguments must be a JSON object.")
-    return body
+WRAPPER_KEYS = ("arguments", "parameters", "params", "args", "input", "tool_input")
+CALL_ID_KEYS = ("call_id", "callId", "conversation_id", "conversationId", "session_id", "sessionId")
+RESERVED_QUERY = {"call_id", "scenario"}
+MAX_SEARCH_NODES = 500
+
+
+def _decode(value: Any) -> Any:
+    if isinstance(value, str) and value.strip().startswith(("{", "[")):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return value
+    return value
+
+
+def _walk(body: Any):
+    """Breadth-first walk over nested dicts/lists, decoding JSON-encoded strings."""
+    queue, seen = [body], 0
+    while queue and seen < MAX_SEARCH_NODES:
+        node = _decode(queue.pop(0))
+        seen += 1
+        if isinstance(node, dict):
+            yield node
+            queue.extend(node.values())
+        elif isinstance(node, list):
+            queue.extend(node)
+
+
+def extract_args(tool: dict[str, Any], body: Any, query: dict[str, str]) -> dict[str, Any]:
+    """Pull the tool's arguments out of whatever envelope the voice platform sends:
+    a flat object, {"arguments": {...}}, a JSON string, a nested tool-call payload,
+    form fields, or query params. Unknown keys are dropped."""
+    props = tool["parameters"].get("properties", {})
+    names = set(props)
+    found: dict[str, Any] = {}
+    if names:
+        for node in _walk(body):
+            if names & node.keys():
+                found = node
+                break
+            for key in WRAPPER_KEYS:
+                inner = _decode(node.get(key))
+                if isinstance(inner, dict) and names & inner.keys():
+                    found = inner
+                    break
+            if found:
+                break
+    args = {k: v for k, v in query.items() if k in names and k not in RESERVED_QUERY}
+    args.update({k: v for k, v in found.items() if k in names and v is not None})
+    for k, v in args.items():
+        if props[k].get("type") == "string" and not isinstance(v, str):
+            args[k] = str(v)
+    return args
+
+
+def find_call_id(body: Any) -> str | None:
+    for node in _walk(body):
+        for key in CALL_ID_KEYS:
+            if isinstance(node.get(key), (str, int)) and str(node[key]):
+                return str(node[key])
+    return None
+
+
+def _parse_body(raw: bytes, content_type: str) -> Any:
+    if not raw.strip():
+        return {}
+    text = raw.decode("utf-8", errors="replace").strip()
+    if text.startswith(("{", "[", '"')) or "application/x-www-form-urlencoded" not in content_type:
+        return json.loads(text)
+    return {k: v[0] for k, v in parse_qs(text).items()}
 
 
 def make_handler(store: CallStore, api_key: str | None, public_base_url: str | None):
+    recent_requests: deque[dict[str, Any]] = deque(maxlen=MAX_LOGGED_REQUESTS)
+
     class Handler(BaseHTTPRequestHandler):
         server_version = "ChaseMockTools/1.0"
 
@@ -149,6 +215,10 @@ def make_handler(store: CallStore, api_key: str | None, public_base_url: str | N
                 return self._send(200, {"call_id": self._call_id(), "scenario": b.scenario.id,
                                         "authenticated": b.authenticated_merchant_id, "cases": b.cases,
                                         "transfers": b.transfers, "log": b.log})
+            if path == "/debug/requests":
+                if not self._authorized():
+                    return self._send(401, {"error": "Unauthorized"})
+                return self._send(200, list(reversed(recent_requests)))
             self._send(404, {"error": "Not found"})
 
         def do_POST(self) -> None:
@@ -168,12 +238,43 @@ def make_handler(store: CallStore, api_key: str | None, public_base_url: str | N
                 name = path.removeprefix("/tools/")
                 if name not in TOOLS:
                     return self._send(404, {"error": f"Unknown tool '{name}'."})
-                try:
-                    args = _unwrap_args(json.loads(raw) if raw.strip() else {})
-                except (json.JSONDecodeError, ValueError) as exc:
-                    return self._send(400, {"error": f"Bad request body: {exc}"})
-                return self._send(200, store.get(self._call_id(), scenario).call(name, args))
+                return self._handle_tool(name, raw, scenario)
             self._send(404, {"error": "Not found"})
+
+        def _handle_tool(self, name: str, raw: bytes, scenario: str | None) -> None:
+            tool = TOOLS[name]
+            entry: dict[str, Any] = {
+                "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "tool": name,
+                "path": self.path,
+                "headers": {k: v for k, v in self.headers.items() if k.lower() not in REDACTED_HEADERS},
+                "raw_body": raw.decode("utf-8", errors="replace")[:MAX_LOGGED_BODY],
+            }
+            recent_requests.append(entry)
+            try:
+                body = _parse_body(raw, self.headers.get("Content-Type", ""))
+            except json.JSONDecodeError as exc:
+                entry["result"] = result = {"error": f"Bad request body: {exc}", "tool_ran": False}
+                return self._send(400, result)
+            call_id = self.headers.get("X-Call-Id") or self._query().get("call_id") or find_call_id(body) or "default"
+            args = extract_args(tool, body, self._query())
+            missing = [p for p in tool["parameters"].get("required", []) if not args.get(p)]
+            entry.update(call_id=call_id, parsed_args=args)
+            if missing:
+                result = {
+                    "error": f"The tool did not run: required arguments missing: {', '.join(missing)}. "
+                             "This is a system error, not a result. Do not tell the caller anything was "
+                             "incorrect, and do not treat them as verified. Call the tool again with the "
+                             "required arguments.",
+                    "tool_ran": False,
+                    "missing_arguments": missing,
+                }
+            else:
+                result = store.get(call_id, scenario).call(name, args)
+            entry["result"] = result
+            print(f"tool={name} call_id={call_id} args={json.dumps(args, ensure_ascii=False)} "
+                  f"result={json.dumps(result, ensure_ascii=False)}", flush=True)
+            self._send(200, result)
 
     return Handler
 
