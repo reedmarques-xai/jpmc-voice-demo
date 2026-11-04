@@ -1,0 +1,114 @@
+[
+  {
+    "type": "function",
+    "name": "get_call_context",
+    "description": "Call once at the start of every call. Returns which number was dialed (dialed_line is CA_MAIN for the Canada main line, otherwise US_MAIN), the caller's phone number (ani), and the current Eastern Time (current_time_et, day_of_week).",
+    "parameters": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "type": "function",
+    "name": "authenticate_merchant",
+    "description": "Verify the caller. Always pass merchant_id plus exactly one second factor: first try ani (the caller's phone number from get_call_context); if that fails, try postal_code. Returns authenticated true/false and, on success, merchant_name. On failure it never says which value didn't match.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "merchant_id": {
+          "type": "string",
+          "description": "Merchant ID as spoken or keyed by the caller, digits only."
+        },
+        "ani": {
+          "type": "string",
+          "description": "Caller's phone number from get_call_context. Use on the first attempt."
+        },
+        "postal_code": {
+          "type": "string",
+          "description": "Business US zip code or Canadian postal code. Use on the second attempt."
+        }
+      },
+      "required": ["merchant_id"]
+    }
+  },
+  {
+    "type": "function",
+    "name": "get_account_status",
+    "description": "Only call after authenticate_merchant succeeds. Returns collections_hold.active, fraud_hold (active, placed_date, placed_date_spoken, days_since_placed), and bank_account_update_case (open, bank_account_last4). Use placed_date_spoken verbatim when reading the hold date. A fraud hold is 'recent' when days_since_placed is 4 or less.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "merchant_id": {
+          "type": "string",
+          "description": "The authenticated Merchant ID."
+        }
+      },
+      "required": ["merchant_id"]
+    }
+  },
+  {
+    "type": "function",
+    "name": "is_business_hours",
+    "description": "Returns open true/false for a specialist queue. Collections and Fraud specialists work Monday through Friday, 8 AM to 6 PM Eastern Time. Also returns hours_spoken for telling callers the hours.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "queue": {
+          "type": "string",
+          "enum": ["collections", "fraud"]
+        }
+      },
+      "required": ["queue"]
+    }
+  },
+  {
+    "type": "function",
+    "name": "create_callback_case",
+    "description": "Open a bank account update verification callback case (category 'ECC-Advanced Merchant Support', type 'DDA Research', origin 'IVR') for the caller's chosen window. Returns case_id and window_spoken to use in the confirmation.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "merchant_id": {
+          "type": "string",
+          "description": "The authenticated Merchant ID."
+        },
+        "window": {
+          "type": "string",
+          "enum": ["morning", "midday", "afternoon"],
+          "description": "morning = 7 to 10 AM, midday = 10 AM to 2 PM, afternoon = 2 to 6 PM."
+        }
+      },
+      "required": ["merchant_id", "window"]
+    }
+  },
+  {
+    "type": "function",
+    "name": "transfer",
+    "description": "Transfer the call. Use collections or fraud for specialist transfers (only during business hours); use the other queues for main menu services. Say the handoff line to the caller before calling this.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "queue": {
+          "type": "string",
+          "enum": [
+            "collections",
+            "fraud",
+            "batch_transaction_deposit",
+            "terminal_support",
+            "statements_account_changes",
+            "disputes_chargebacks",
+            "voice_authorization",
+            "government_public_sector"
+          ],
+          "description": "Main menu keys: batch_transaction_deposit=2, terminal_support=3, statements_account_changes=4, disputes_chargebacks=5, voice_authorization=6, government_public_sector=8."
+        },
+        "reason": {
+          "type": "string",
+          "description": "One-line summary for the receiving specialist, e.g. 'Authenticated merchant 4472190, fraud hold placed Oct 28, 7 days in review.'"
+        }
+      },
+      "required": ["queue", "reason"]
+    }
+  }
+]
