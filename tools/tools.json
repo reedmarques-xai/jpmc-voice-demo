@@ -27,7 +27,7 @@
   {
     "type": "function",
     "name": "authenticate_merchant",
-    "description": "Call this after the caller gives their Merchant ID and confirms your read-back. First attempt: pass merchant_id with ani from get_call_context, without asking the caller anything else. If that returns authenticated false, ask for the business zip or postal code and call again with merchant_id and postal_code. Do not call more than twice per call; after two failures, say you couldn't identify them and go to the main menu. On success, greet them by merchant_name and immediately call get_account_status. The caller is verified ONLY when the result contains authenticated: true; any other result, including an error, means not verified, so never say the account was found, never call get_account_status, and never share account details. If the result has tool_ran: false or an error, it is a system problem, not a failed try: call again with merchant_id and the second factor filled in. Never tell the caller their Merchant ID or any other value is incorrect or which value didn't match.",
+    "description": "Call this after the caller gives their Merchant ID and confirms your read-back. First attempt: pass merchant_id with ani from get_call_context, without asking the caller anything else. If that returns authenticated false, ask for the business zip or postal code and call again with merchant_id and postal_code. If the caller instead gave the last four digits of their deposit account, pass merchant_id with bank_account_last4. Do not call more than twice per call; after two failures, say you couldn't identify them and go to the main menu. On success, greet them by merchant_name and immediately call get_account_status. The caller is verified ONLY when the result contains authenticated: true; any other result, including an error, means not verified, so never say the account was found, never call get_account_status, and never share account details. If the result has tool_ran: false or an error, it is a system problem, not a failed try: call again with merchant_id and the second factor filled in. Never tell the caller their Merchant ID or any other value is incorrect or which value didn't match.",
     "parameters": {
       "type": "object",
       "properties": {
@@ -42,6 +42,10 @@
         "postal_code": {
           "type": "string",
           "description": "Business US zip code or Canadian postal code. Use on the second attempt."
+        },
+        "bank_account_last4": {
+          "type": "string",
+          "description": "The last four digits of the bank account deposits go to, as the caller said them. Use when the caller verifies this way instead of by phone number or zip code."
         }
       },
       "required": ["merchant_id"]
@@ -100,7 +104,7 @@
   {
     "type": "function",
     "name": "get_recent_deposits",
-    "description": "Call this when a verified caller asks about a deposit: it didn't arrive, it's late, it's less than expected, or they want to know when it will post. Returns recent batches, newest first, with gross_sales, fees, adjustments (such as chargebacks), net_deposit, status (posted, sent, pending), deposit_date_spoken, bank_account_last4, and sometimes status_note. Explain the most recent batch first in one or two sentences, using the amounts exactly as given. If a status_note is present, say it. If an adjustment has a dispute_id, offer to explain it and then call get_disputes. Never read a full bank account number; use only bank_account_last4. Do not call before authenticate_merchant succeeds.",
+    "description": "Call this when a verified caller asks about a deposit: it didn't arrive, it's late, it's less than expected, or they want to know when it will post. Returns recent batches, newest first, with gross_sales, fees, adjustments (such as chargebacks), net_deposit, status (posted, sent, scheduled), timing, deposit_date_spoken, deposit_date_relative_spoken, bank_account_last4, and sometimes status_note. Explain the most recent batch first in one or two sentences, using the amounts exactly as given. If a status_note is present, say it. timing tells you whether a deposit the caller can't find is missing: 'not_yet_due' means it isn't late, so say when it's scheduled using deposit_date_relative_spoken (for example 'That one isn't late. Yesterday's sales are scheduled to reach your account tomorrow, Friday the 6th.'); only 'late' means it's missing, so offer the deposits team. For a deposit that's less than expected on a specific day, prefer get_deposit_reconciliation. If an adjustment has a dispute_id, offer to explain it and then call get_disputes. Never read a full bank account number; use only bank_account_last4. Do not call before authenticate_merchant succeeds.",
     "parameters": {
       "type": "object",
       "properties": {
@@ -114,8 +118,27 @@
   },
   {
     "type": "function",
+    "name": "get_deposit_reconciliation",
+    "description": "Call this when a verified caller says a deposit from a specific day is short, less than expected, or doesn't match their sales. Pass the day they named. Returns batch_day_spoken, batches_total, deposited, difference, causes (already sorted largest first, each with amount, explanation, and sometimes next_step or dispute_id), unexplained, fully_explained, holds, and internal_do_not_say. Say: 'Your card batches on {batch_day_spoken} totaled {batches_total}, and {deposited} was deposited. That's {difference} less, and all of it is accounted for:' then each cause in the order given as '{amount} {explanation}'. If holds is 'none', say 'Nothing is on hold.' Then read any next_step. Never do the math yourself, never reorder the causes, and never say anything from internal_do_not_say or internal terms like service type, conveyed, or SE number. If fully_explained is false, say part of the difference needs review and offer the deposits team. Do not call before authenticate_merchant succeeds.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "merchant_id": {
+          "type": "string",
+          "description": "The Merchant ID from the successful authenticate_merchant result."
+        },
+        "batch_date": {
+          "type": "string",
+          "description": "The day the caller named: a weekday like 'Sunday', 'yesterday', or a date as YYYY-MM-DD."
+        }
+      },
+      "required": ["merchant_id", "batch_date"]
+    }
+  },
+  {
+    "type": "function",
     "name": "get_disputes",
-    "description": "Call this when a verified caller asks about a chargeback, a dispute, or a 'Request for Transaction Documentation' letter, or after get_recent_deposits shows a chargeback deduction and the caller wants to know more. Returns each dispute's card_brand, amount, reason, transaction_date_spoken, response_due_spoken, days_to_respond, and status. Tell the caller the amount, card brand, reason, and response deadline, then offer to connect them with the disputes team to respond. Never say whether they will win, and never give advice on what evidence to send. Do not call before authenticate_merchant succeeds.",
+    "description": "Call this when a verified caller asks about a chargeback, a dispute, or a 'Request for Transaction Documentation' letter, or after get_recent_deposits shows a chargeback deduction and the caller wants to know more. Returns each dispute's card_brand, amount, reason, transaction_date_spoken, status, response_due_known, time_sensitive, and, when known, response_due_spoken and days_to_respond, plus merchant_guidance when there is guidance to share. Tell the caller the amount, card brand, and reason. If response_due_known is true, give the deadline; if it's false, never state or estimate a deadline, and if time_sensitive is true say disputes are time sensitive, so they should respond as soon as they can. Share merchant_guidance exactly as written, and give no other advice on what evidence to send. Offer to connect them with the disputes team to respond. Never say whether they will win. Do not call before authenticate_merchant succeeds.",
     "parameters": {
       "type": "object",
       "properties": {

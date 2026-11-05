@@ -156,5 +156,83 @@ class FlowTests(unittest.TestCase):
             MockBackend(sid).call("get_call_context")
 
 
+class DepositShortTests(unittest.TestCase):
+    def setUp(self):
+        self.b = MockBackend("deposit_short")
+        r = self.b.call("authenticate_merchant", {"merchant_id": BLUE_FERN, "bank_account_last4": "4821"})
+        self.assertTrue(r["authenticated"], r)
+
+    def test_last_four_verification(self):
+        b = MockBackend("deposit_short")
+        self.assertEqual(b.call("authenticate_merchant", {"merchant_id": BLUE_FERN, "bank_account_last4": "1234"}),
+                         {"authenticated": False})
+        self.assertIn("error", b.call("get_deposit_reconciliation", {"merchant_id": BLUE_FERN, "batch_date": "Sunday"}))
+        self.assertTrue(b.call("authenticate_merchant", {"merchant_id": BLUE_FERN,
+                                                         "bank_account_last4": "4 8 2 1"})["authenticated"])
+
+    def test_reconciliation_line(self):
+        r = self.b.call("get_deposit_reconciliation", {"merchant_id": BLUE_FERN, "batch_date": "Sunday"})
+        self.assertEqual((r["batch_day_spoken"], r["batches_total"], r["deposited"], r["difference"]),
+                         ("Sunday", "$2,311.75", "$1,946.65", "$365.10"))
+        self.assertEqual((r["unexplained"], r["fully_explained"], r["holds"], r["batch_count"]),
+                         ("$0.00", True, "none", 2))
+
+    def test_causes_largest_first_with_customer_wording(self):
+        causes = self.b.call("get_deposit_reconciliation",
+                             {"merchant_id": BLUE_FERN, "batch_date": "Sunday"})["causes"]
+        self.assertEqual([c["amount"] for c in causes], ["$200", "$120", "$45.10"])
+        self.assertEqual([c["type"] for c in causes], ["amex_paid_directly", "chargeback", "processing_fees"])
+        self.assertEqual(causes[0]["next_step"],
+                         "For the $200, your American Express setup looks right, so they'll pay you separately. "
+                         "If you don't see it, call them at 1-800-528-5200.")
+
+    def test_internal_terms_kept_out_of_spoken_fields(self):
+        r = self.b.call("get_deposit_reconciliation", {"merchant_id": BLUE_FERN, "batch_date": "Sunday"})
+        self.assertEqual(r["internal_do_not_say"]["amex_service_type"], "conveyed")
+        spoken = json.dumps({k: v for k, v in r.items() if k != "internal_do_not_say"}).lower()
+        for term in ("conveyed", "service type", "9417263850", " se "):
+            self.assertNotIn(term, spoken)
+
+    def test_batch_date_formats(self):
+        for value in ("Sunday", "sunday", "last Sunday", "2026-11-01"):
+            r = self.b.call("get_deposit_reconciliation", {"merchant_id": BLUE_FERN, "batch_date": value})
+            self.assertEqual(r["batches_total"], "$2,311.75", value)
+        y = self.b.call("get_deposit_reconciliation", {"merchant_id": BLUE_FERN, "batch_date": "yesterday"})
+        self.assertEqual(y["batch_date_spoken"], "Wednesday, November 4th")
+        self.assertIn("error", self.b.call("get_deposit_reconciliation",
+                                           {"merchant_id": BLUE_FERN, "batch_date": "next fortnight"}))
+
+    def test_chargeback_has_no_deadline(self):
+        d = self.b.call("get_disputes", {"merchant_id": BLUE_FERN})["disputes"][0]
+        self.assertEqual((d["amount"], d["status"], d["response_due_known"], d["time_sensitive"]),
+                         ("$120", "waiting_for_merchant_response", False, True))
+        self.assertNotIn("response_due_spoken", d)
+        self.assertNotIn("days_to_respond", d)
+        self.assertTrue(d["merchant_guidance"].startswith("Send all your evidence together in one package"))
+
+    def test_yesterday_is_not_yet_due(self):
+        latest = self.b.call("get_recent_deposits", {"merchant_id": BLUE_FERN})["deposits"][0]
+        self.assertEqual((latest["batch_date_relative_spoken"], latest["timing"], latest["deposit_date_relative_spoken"]),
+                         ("yesterday, Wednesday the 4th", "not_yet_due", "tomorrow, Friday the 6th"))
+
+    def test_existing_deadline_scenario_unchanged(self):
+        b = authed("short_deposit_chargeback")
+        d = b.call("get_disputes", {"merchant_id": BLUE_FERN})["disputes"][0]
+        self.assertTrue(d["response_due_known"])
+        self.assertEqual(d["response_due_spoken"], "Wednesday, November 18th")
+
+
+class DepositShortToolFileTests(unittest.TestCase):
+    def test_uses_shared_urls_and_known_params(self):
+        import pathlib
+        shared = {t["name"]: t for t in load_tools()}
+        path = pathlib.Path(__file__).resolve().parent.parent / "tools" / "deposit_short_tools.json"
+        for tool in json.loads(path.read_text()):
+            self.assertNotIn("?", tool["url"])
+            self.assertTrue(tool["url"].endswith(f"/tools/{tool['name']}"))
+            self.assertLessEqual(set(tool["parameters"]["properties"]),
+                                 set(shared[tool["name"]]["parameters"]["properties"]), tool["name"])
+
+
 if __name__ == "__main__":
     unittest.main()

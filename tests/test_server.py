@@ -45,7 +45,7 @@ class OpenServerTests(ServerTestCase):
     def test_tool_listing_has_one_url_per_tool(self):
         status, tools = self.request("GET", "/tools")
         self.assertEqual(status, 200)
-        self.assertEqual(len(tools), 11)
+        self.assertEqual(len(tools), 12)
         for t in tools:
             self.assertEqual(t["url"], f"{self.base}/tools/{t['name']}")
             self.assertEqual(t["method"], "POST")
@@ -126,6 +126,17 @@ class OpenServerTests(ServerTestCase):
         self.assertEqual(r["scenario"], "missing_deposit")
         r = self.request("POST", "/tools/select_demo_scenario?scenario=fee_question")[1]
         self.assertEqual(r["scenario"], "fee_question")
+
+    def test_deposit_short_flow_over_http(self):
+        r = self.request("POST", "/tools/select_demo_scenario", {"scenario": "deposit_short"})[1]
+        self.assertEqual(r["scenario"], "deposit_short")
+        auth = self.request("POST", "/tools/authenticate_merchant",
+                            {"merchant_id": "4472190", "bank_account_last4": "4821"})[1]
+        self.assertTrue(auth["authenticated"])
+        recon = self.request("POST", "/tools/get_deposit_reconciliation",
+                             {"merchant_id": "4472190", "batch_date": "Sunday"})[1]
+        self.assertEqual((recon["batches_total"], recon["deposited"], recon["difference"]),
+                         ("$2,311.75", "$1,946.65", "$365.10"))
 
     def test_demo_menu_numbers(self):
         expected = {"1": "fraud_hold_recent", "2": "fraud_hold_aged_open", "3": "missing_deposit",

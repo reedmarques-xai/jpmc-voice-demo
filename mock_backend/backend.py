@@ -1,11 +1,11 @@
 """Mock implementations of the voice agent's tools, driven by a Scenario."""
 
 import re
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
-from .scenarios import DEFAULT_SCENARIO, SCENARIOS, Merchant, Scenario
+from .scenarios import DEFAULT_SCENARIO, SCENARIOS, Deposit, Merchant, Scenario
 
 ET = ZoneInfo("America/New_York")
 
@@ -51,8 +51,40 @@ def _money(amount: float) -> str:
     return f"${amount:,.2f}"
 
 
+def _money_spoken(amount: float) -> str:
+    """Like _money, but whole-dollar amounts drop the cents ('$200', '$45.10')."""
+    return _money(amount).removesuffix(".00")
+
+
 def spoken_date(d) -> str:
     return f"{d.strftime('%A, %B')} {_ordinal(d.day)}"
+
+
+WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+
+
+def relative_spoken_date(d: date, today: date) -> str:
+    """'tomorrow, Friday the 6th' for nearby dates; the full spoken date otherwise."""
+    offset = (d - today).days
+    label = {-1: "yesterday", 0: "today", 1: "tomorrow"}.get(offset)
+    if label:
+        return f"{label}, {d.strftime('%A')} the {_ordinal(d.day)}"
+    return spoken_date(d)
+
+
+def resolve_date(value: str, today: date) -> date:
+    """Accept an ISO date, 'today', 'yesterday', or a weekday name (the most recent one on or before today)."""
+    text = value.strip().lower().removeprefix("last ").removesuffix("'s").strip()
+    if text == "today":
+        return today
+    if text == "yesterday":
+        return today - timedelta(days=1)
+    if text.rstrip("s") in WEEKDAYS:
+        return today - timedelta(days=(today.weekday() - WEEKDAYS.index(text.rstrip("s"))) % 7)
+    try:
+        return date.fromisoformat(value.strip())
+    except ValueError:
+        raise ToolError(f"Couldn't understand the date '{value}'. Use a weekday name, 'yesterday', or YYYY-MM-DD.")
 
 
 class MockBackend:
@@ -74,6 +106,7 @@ class MockBackend:
             "create_callback_case": self.create_callback_case,
             "transfer": self.transfer,
             "get_recent_deposits": self.get_recent_deposits,
+            "get_deposit_reconciliation": self.get_deposit_reconciliation,
             "get_disputes": self.get_disputes,
             "get_statement_fees": self.get_statement_fees,
             "report_unrecognized_bank_change": self.report_unrecognized_bank_change,
@@ -119,14 +152,20 @@ class MockBackend:
         }
 
     def authenticate_merchant(
-        self, merchant_id: str, ani: str | None = None, postal_code: str | None = None
+        self,
+        merchant_id: str,
+        ani: str | None = None,
+        postal_code: str | None = None,
+        bank_account_last4: str | None = None,
     ) -> dict[str, Any]:
-        if not ani and not postal_code:
-            raise ToolError("Provide ani or postal_code.")
+        if not ani and not postal_code and not bank_account_last4:
+            raise ToolError("Provide ani, postal_code, or bank_account_last4.")
         merchant = self._merchant(merchant_id)
-        ok = merchant is not None and (
+        ok = merchant is not None and bool(
             (ani and _phone(ani) == _phone(merchant.ani))
             or (postal_code and _postal(postal_code) == _postal(merchant.postal_code))
+            or (bank_account_last4 and merchant.deposit_account_last4
+                and _digits(bank_account_last4)[-4:] == merchant.deposit_account_last4)
         )
         if not ok:
             return {"authenticated": False}
@@ -181,13 +220,20 @@ class MockBackend:
         self.cases.append(case)
         return {"created": True, **case}
 
+    def _timing(self, d: Deposit) -> str:
+        if d.status == "posted":
+            return "posted"
+        return "not_yet_due" if d.deposit_date >= self._now.date() else "late"
+
     def get_recent_deposits(self, merchant_id: str) -> dict[str, Any]:
         m = self._require_auth(merchant_id)
+        today = self._now.date()
         deposits = []
         for d in sorted(m.deposits, key=lambda d: d.batch_date, reverse=True):
             deducted = sum(a.amount for a in d.adjustments)
             deposits.append({
                 "batch_date_spoken": spoken_date(d.batch_date),
+                "batch_date_relative_spoken": relative_spoken_date(d.batch_date, today),
                 "gross_sales": _money(d.gross_sales),
                 "fees": _money(d.fees),
                 "adjustments": [{"type": a.kind, "amount": _money(a.amount), "description": a.description,
@@ -195,28 +241,82 @@ class MockBackend:
                                 for a in d.adjustments],
                 "net_deposit": _money(d.gross_sales - d.fees - deducted),
                 "status": d.status,
+                "timing": self._timing(d),
                 "deposit_date_spoken": spoken_date(d.deposit_date),
+                "deposit_date_relative_spoken": relative_spoken_date(d.deposit_date, today),
                 "bank_account_last4": d.bank_account_last4,
                 **({"status_note": d.status_note} if d.status_note else {}),
             })
         return {"deposits": deposits}
 
+    def get_deposit_reconciliation(self, merchant_id: str, batch_date: str) -> dict[str, Any]:
+        m = self._require_auth(merchant_id)
+        day = resolve_date(batch_date, self._now.date())
+        batches = [d for d in m.deposits if d.batch_date == day] or [d for d in m.deposits if d.deposit_date == day]
+        if not batches:
+            raise ToolError(f"No card batches found for {spoken_date(day)}.")
+        total = sum(d.gross_sales for d in batches)
+        fees = sum(d.fees for d in batches)
+        adjustments = [a for d in batches for a in d.adjustments]
+        deposited = total - fees - sum(a.amount for a in adjustments)
+        difference = total - deposited
+
+        causes = [{
+            "type": a.kind,
+            "amount": _money_spoken(a.amount),
+            "amount_value": round(a.amount, 2),
+            "explanation": a.customer_wording or a.description,
+            **({"next_step": f"For the {_money_spoken(a.amount)}, {a.next_step}"} if a.next_step else {}),
+            **({"dispute_id": a.dispute_id} if a.dispute_id else {}),
+        } for a in adjustments]
+        if fees:
+            causes.append({"type": "processing_fees", "amount": _money_spoken(fees), "amount_value": round(fees, 2),
+                           "explanation": "in processing fees."})
+        causes.sort(key=lambda c: c["amount_value"], reverse=True)
+        unexplained = round(difference - sum(c["amount_value"] for c in causes), 2)
+
+        holds = [name for name, active in (("collections_hold", m.collections_hold),
+                                           ("fraud_hold", bool(m.fraud_hold_placed))) if active]
+        internal = {k: v for a in adjustments for k, v in a.internal}
+        return {
+            "batch_date_spoken": spoken_date(day),
+            "batch_day_spoken": day.strftime("%A"),
+            "batch_count": sum(d.batch_count for d in batches),
+            "batches_total": _money(total),
+            "deposited": _money(deposited),
+            "deposit_status": "posted" if all(d.status == "posted" for d in batches) else batches[0].status,
+            "deposit_date_spoken": spoken_date(batches[0].deposit_date),
+            "bank_account_last4": batches[0].bank_account_last4,
+            "difference": _money(difference),
+            "causes": [{k: v for k, v in c.items() if k != "amount_value"} for c in causes],
+            "unexplained": _money(abs(unexplained)),
+            "fully_explained": abs(unexplained) < 0.005,
+            "holds": holds or "none",
+            **({"internal_do_not_say": internal} if internal else {}),
+        }
+
     def get_disputes(self, merchant_id: str) -> dict[str, Any]:
         m = self._require_auth(merchant_id)
-        return {
-            "count": len(m.disputes),
-            "disputes": [{
+        disputes = []
+        for d in m.disputes:
+            entry: dict[str, Any] = {
                 "dispute_id": d.dispute_id,
                 "card_brand": d.card_brand,
-                "amount": _money(d.amount),
+                "amount": _money_spoken(d.amount),
                 "reason": d.reason,
                 "transaction_date_spoken": spoken_date(d.transaction_date),
                 "received_date_spoken": spoken_date(d.received_date),
-                "response_due_spoken": spoken_date(d.response_due),
-                "days_to_respond": (d.response_due - self._now.date()).days,
                 "status": d.status,
-            } for d in m.disputes],
-        }
+                "response_due_known": d.response_due is not None,
+                "time_sensitive": d.time_sensitive,
+            }
+            if d.response_due:
+                entry["response_due_spoken"] = spoken_date(d.response_due)
+                entry["days_to_respond"] = (d.response_due - self._now.date()).days
+            if d.merchant_guidance:
+                entry["merchant_guidance"] = d.merchant_guidance
+            disputes.append(entry)
+        return {"count": len(disputes), "disputes": disputes}
 
     def get_statement_fees(self, merchant_id: str) -> dict[str, Any]:
         m = self._require_auth(merchant_id)

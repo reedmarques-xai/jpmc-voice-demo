@@ -1,0 +1,90 @@
+[
+  {
+    "name": "select_demo_scenario",
+    "method": "POST",
+    "url": "https://jpmc-voice-demo-production.up.railway.app/tools/select_demo_scenario",
+    "description": "Call this first, before you say anything, exactly once per call, with scenario set to 'deposit_short'. It prepares the account for this call. Never mention it or anything about setup to the caller, and never call it again.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "scenario": {
+          "type": "string",
+          "description": "Always the exact value 'deposit_short'."
+        }
+      },
+      "required": ["scenario"]
+    }
+  },
+  {
+    "name": "authenticate_merchant",
+    "method": "POST",
+    "url": "https://jpmc-voice-demo-production.up.railway.app/tools/authenticate_merchant",
+    "description": "Call this as soon as the caller gives their Merchant ID and the last four digits of the account their deposits go to. Pass merchant_id and bank_account_last4. The caller is verified only when the result contains authenticated: true; then say 'Thanks, you're verified. What can I help with?' If authenticated is false, ask once more for both values without saying which one didn't match; after a second failure, say you weren't able to verify them. If the result has tool_ran: false or an error, it's a system problem, not a failed try: call again with both values filled in. Never share anything about the account before verification.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "merchant_id": {
+          "type": "string",
+          "description": "The caller's Merchant ID, exactly as they said it."
+        },
+        "bank_account_last4": {
+          "type": "string",
+          "description": "The last four digits of the bank account deposits go to, as the caller said them."
+        }
+      },
+      "required": ["merchant_id", "bank_account_last4"]
+    }
+  },
+  {
+    "name": "get_deposit_reconciliation",
+    "method": "POST",
+    "url": "https://jpmc-voice-demo-production.up.railway.app/tools/get_deposit_reconciliation",
+    "description": "Call this when a verified caller says a deposit from a specific day is short or less than expected. Pass the day they named, such as 'Sunday'. Then say: 'I see it. Your card batches on {batch_day_spoken} totaled {batches_total}, and {deposited} was deposited. That's {difference} less, and all of it is accounted for:' then each cause in the order given, as '{amount} {explanation}'. Then, if holds is 'none', say 'Nothing is on hold.' and read any next_step exactly as written. Never do the math yourself, never reorder the causes, and never say anything from internal_do_not_say or internal terms like service type, conveyed, or SE number. If fully_explained is false, say part of the difference needs review.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "merchant_id": {
+          "type": "string",
+          "description": "The Merchant ID from the successful authenticate_merchant result."
+        },
+        "batch_date": {
+          "type": "string",
+          "description": "The day the caller named: a weekday like 'Sunday', 'yesterday', or a date as YYYY-MM-DD."
+        }
+      },
+      "required": ["merchant_id", "batch_date"]
+    }
+  },
+  {
+    "name": "get_disputes",
+    "method": "POST",
+    "url": "https://jpmc-voice-demo-production.up.railway.app/tools/get_disputes",
+    "description": "Call this when a verified caller asks about a chargeback or what to do about one. Find the dispute matching the chargeback you mentioned. Say: 'The cardholder disputed a {amount} sale, and it's waiting for your response. {merchant_guidance} Disputes are time sensitive, so I'd send it as soon as you can.' If response_due_known is false, never state or estimate a deadline. Share merchant_guidance exactly as written and give no other evidence advice. Never say whether they will win.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "merchant_id": {
+          "type": "string",
+          "description": "The Merchant ID from the successful authenticate_merchant result."
+        }
+      },
+      "required": ["merchant_id"]
+    }
+  },
+  {
+    "name": "get_recent_deposits",
+    "method": "POST",
+    "url": "https://jpmc-voice-demo-production.up.railway.app/tools/get_recent_deposits",
+    "description": "Call this when a verified caller says they don't see a deposit, such as yesterday's. Find the batch for the day they mean using batch_date_relative_spoken. If its timing is 'not_yet_due', say: 'That one isn't late. Yesterday's sales are scheduled to reach your account {deposit_date_relative_spoken}.' (use the day they asked about in place of 'Yesterday's' if different). If timing is 'posted', tell them it was deposited on {deposit_date_spoken} to the account ending in {bank_account_last4}. Only if timing is 'late' treat it as missing and say a specialist will need to look into it.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "merchant_id": {
+          "type": "string",
+          "description": "The Merchant ID from the successful authenticate_merchant result."
+        }
+      },
+      "required": ["merchant_id"]
+    }
+  }
+]
