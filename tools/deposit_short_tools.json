@@ -19,17 +19,17 @@
     "name": "authenticate_merchant",
     "method": "POST",
     "url": "https://jpmc-voice-demo-production.up.railway.app/tools/authenticate_merchant",
-    "description": "Call this as soon as the caller gives their Merchant ID and the last four digits of the account their deposits go to. Pass merchant_id and bank_account_last4. The caller is verified only when the result contains authenticated: true; then say 'Thanks, you're verified. What can I help with?' If authenticated is false, ask once more for both values without saying which one didn't match; after a second failure, say you weren't able to verify them. If the result has tool_ran: false or an error, it's a system problem, not a failed try: call again with both values filled in. Never share anything about the account before verification.",
+    "description": "Call this after the caller gives their Merchant ID and the last four digits of the account their deposits go to, you've read both back one digit at a time, and the caller has said they're right. Pass merchant_id and bank_account_last4. The caller is verified only when the result contains authenticated: true; then say 'Thanks, you're verified. What can I help with?' If authenticated is false, ask once more for both values without saying which one didn't match; after a second failure, say you weren't able to verify them. If the result has tool_ran: false or an error, it's a system problem, not a failed try: call again with both values filled in. Never share anything about the account before verification.",
     "parameters": {
       "type": "object",
       "properties": {
         "merchant_id": {
           "type": "string",
-          "description": "The caller's Merchant ID, exactly as they said it."
+          "description": "The Merchant ID the caller said on this call and confirmed after you read it back. Never fill this in yourself."
         },
         "bank_account_last4": {
           "type": "string",
-          "description": "The last four digits of the bank account deposits go to, as the caller said them."
+          "description": "The last four digits of the deposit account that the caller said on this call and confirmed after you read them back. Never fill this in yourself."
         }
       },
       "required": ["merchant_id", "bank_account_last4"]
@@ -85,6 +85,70 @@
         }
       },
       "required": ["merchant_id"]
+    }
+  },
+  {
+    "name": "get_email_on_file",
+    "method": "POST",
+    "url": "https://jpmc-voice-demo-production.up.railway.app/tools/get_email_on_file",
+    "description": "Call this only after a verified caller says yes to getting an email recap of the charges. Then read email_spoken back exactly as written and ask: 'I have {email_spoken} on file. Is that right?' Don't call send_recap_email until the caller says yes. If they say it's wrong, don't send; you can't change it on this call, so offer to connect them with the account changes team. If email_on_file is false, say there's no email on file and offer the account changes team. Never accept or use an email address the caller says.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "merchant_id": {
+          "type": "string",
+          "description": "The Merchant ID from the successful authenticate_merchant result."
+        }
+      },
+      "required": ["merchant_id"]
+    }
+  },
+  {
+    "name": "send_recap_email",
+    "method": "POST",
+    "url": "https://jpmc-voice-demo-production.up.railway.app/tools/send_recap_email",
+    "description": "Call this only after you've read the email on file from get_email_on_file to the caller and they've said it's right. It emails a recap of the deposit charges for that day to the address on file. Then say: 'Done. The recap is on its way to {to_spoken}.' Never read the email contents aloud. Call it once per call; if it returns already_sent, just say it's already on its way. If it returns an error, apologize and say you can't send it right now.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "merchant_id": {
+          "type": "string",
+          "description": "The Merchant ID from the successful authenticate_merchant result."
+        },
+        "batch_date": {
+          "type": "string",
+          "description": "The same day you used for get_deposit_reconciliation, such as 'Sunday', 'yesterday', or YYYY-MM-DD."
+        }
+      },
+      "required": ["merchant_id", "batch_date"]
+    }
+  },
+  {
+    "name": "transfer",
+    "method": "POST",
+    "url": "https://jpmc-voice-demo-production.up.railway.app/tools/transfer",
+    "description": "Call this to hand the caller to a team, only after the caller has said yes to being connected and you've said the handoff line out loud (for example 'Okay, connecting you with our disputes team now.'). Use disputes_chargebacks when the caller wants help responding to a chargeback. Use batch_transaction_deposit when a deposit is late, part of a difference needs review, or the caller asks for a person about their deposit. For anything outside deposits and chargebacks, use the matching team. Call it once; after it succeeds, stop talking.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "queue": {
+          "type": "string",
+          "enum": [
+            "disputes_chargebacks",
+            "batch_transaction_deposit",
+            "statements_account_changes",
+            "terminal_support",
+            "voice_authorization",
+            "government_public_sector"
+          ],
+          "description": "disputes_chargebacks: responding to a chargeback or dispute. batch_transaction_deposit: batch, transaction, or deposit questions, or a person about a deposit. statements_account_changes: statements, fees, tax documents, or account changes. terminal_support: terminal password, troubleshooting, paper supplies. voice_authorization: voice authorizations. government_public_sector: government or public sector customers."
+        },
+        "reason": {
+          "type": "string",
+          "description": "One line for the receiving team: whether the caller was verified, the Merchant ID and business name, what you found, and what the caller wants. Example: 'Verified 1234567 Example Shop; Sunday deposit short by chargeback; caller wants help responding.' Never include full card or bank account numbers."
+        }
+      },
+      "required": ["queue", "reason"]
     }
   }
 ]

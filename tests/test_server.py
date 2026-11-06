@@ -45,7 +45,7 @@ class OpenServerTests(ServerTestCase):
     def test_tool_listing_has_one_url_per_tool(self):
         status, tools = self.request("GET", "/tools")
         self.assertEqual(status, 200)
-        self.assertEqual(len(tools), 12)
+        self.assertEqual(len(tools), 14)
         for t in tools:
             self.assertEqual(t["url"], f"{self.base}/tools/{t['name']}")
             self.assertEqual(t["method"], "POST")
@@ -137,6 +137,14 @@ class OpenServerTests(ServerTestCase):
                              {"merchant_id": "4472190", "batch_date": "Sunday"})[1]
         self.assertEqual((recon["batches_total"], recon["deposited"], recon["difference"]),
                          ("$2,311.75", "$1,946.65", "$365.10"))
+        email = self.request("POST", "/tools/get_email_on_file", {"merchant_id": "4472190"})[1]
+        self.assertTrue(email["email_on_file"])
+        with mock.patch.dict(os.environ):
+            os.environ.pop("RESEND_API_KEY", None)
+            sent = self.request("POST", "/tools/send_recap_email", {"merchant_id": "4472190", "batch_date": "Sunday"})[1]
+        self.assertEqual((sent["sent"], sent["delivery"], sent["to_spoken"]), (True, "preview", email["email_spoken"]))
+        recaps = self.request("GET", "/state")[1]["recaps"]
+        self.assertEqual([(r["status"], r["to"]) for r in recaps], [("sent", email["email"])])
 
     def test_demo_menu_numbers(self):
         expected = {"1": "fraud_hold_recent", "2": "fraud_hold_aged_open", "3": "missing_deposit",

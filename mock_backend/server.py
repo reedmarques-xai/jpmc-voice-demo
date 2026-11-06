@@ -228,7 +228,7 @@ def make_handler(store: CallStore, api_key: str | None, public_base_url: str | N
                     return self._send(400, {"error": str(exc)})
                 return self._send(200, {"call_id": self._call_id(), "scenario": b.scenario.id,
                                         "authenticated": b.authenticated_merchant_id, "cases": b.cases,
-                                        "transfers": b.transfers, "log": b.log})
+                                        "transfers": b.transfers, "recaps": b.recaps, "log": b.log})
             if path == "/debug/requests":
                 if not self._authorized():
                     return self._send(401, {"error": "Unauthorized"})

@@ -24,7 +24,7 @@ The six on the phone menu, all using Merchant ID **4472190** (Blue Fern Café, z
 | 5 | Updating your bank account | Pending change to the account ending 9034; books a verification callback window |
 | 6 | A bank account change you didn't make | Pending change to the account ending 7716; puts it on hold, opens a fraud case, transfers to fraud |
 
-**"My deposit is short" (separate agent).** A second xAI agent runs this flow with its own prompt ([prompts/deposit_short_prompt.md](../prompts/deposit_short_prompt.md)) and tools ([tools/deposit_short_tools.json](../tools/deposit_short_tools.json)), using the same URLs as above. It silently selects the `deposit_short` scenario, opens with "Thanks for calling Merchant Services, this is WMM", and verifies by Merchant ID plus the last four of the deposit account (4821). It then explains that Sunday's $2,311.75 in card batches became a $1,946.65 deposit, with all $365.10 accounted for, largest cause first: $200 in American Express sales paid directly by American Express, a $120 Visa chargeback, and $45.10 in fees. It covers the chargeback with no made-up deadline, and treats yesterday's deposit as not yet due (arriving tomorrow, Friday the 6th) rather than missing. Internal terms like "conveyed" and the SE number are never said.
+**"My deposit is short" (separate agent).** A second xAI agent runs this flow with its own prompt ([prompts/deposit_short_prompt.md](../prompts/deposit_short_prompt.md)) and tools ([tools/deposit_short_tools.json](../tools/deposit_short_tools.json)), using the same URLs as above. It silently selects the `deposit_short` scenario, opens with "Thanks for calling Merchant Services, this is WMM", and verifies by Merchant ID plus the last four of the deposit account (4821). It then explains that Sunday's $2,311.75 in card batches became a $1,946.65 deposit, with all $365.10 accounted for, largest cause first: $200 in American Express sales paid directly by American Express, a $120 Visa chargeback, and $45.10 in fees. It covers the chargeback with no made-up deadline, and treats yesterday's deposit as not yet due (arriving tomorrow, Friday the 6th) rather than missing. Internal terms like "conveyed" and the SE number are never said. It can also email the caller a recap of the charges: it reads the email on file back letter by letter, waits for a yes, and sends one recap per call, only to the address on file.
 
 Ten more scenarios are available by ID (via `/reset?scenario=<id>` or `?scenario=<id>` on tool URLs): `collections_hold_open`, `collections_hold_after_hours`, `fraud_hold_boundary` (exactly 4 days), `fraud_hold_aged_weekend` (Saturday, specialists closed), `short_deposit_chargeback` ($412.30 Visa chargeback, respond by November 18th), `no_issues`, `auth_postal_fallback` (unrecognized phone, zip works), `auth_fail`, `canada_line` (bilingual, Merchant ID 8830417), and `status_tool_failure` (account system down).
 
@@ -45,9 +45,11 @@ Ten more scenarios are available by ID (via `/reset?scenario=<id>` or `?scenario
 | `get_statement_fees` | `merchant_id` | Last statement's fees with plain-language explanations |
 | `create_callback_case` | `merchant_id`, `window` (`morning`, `midday`, `afternoon`) | Books a bank change verification callback |
 | `report_unrecognized_bank_change` | `merchant_id` | Puts a pending bank change on hold and opens a fraud case |
+| `get_email_on_file` | `merchant_id` | The email address on file, spelled out for reading back to the caller |
+| `send_recap_email` | `merchant_id`, `batch_date` | Emails a recap of that day's charges to the address on file, once per call |
 | `transfer` | `queue`, `reason` | Hands off to collections, fraud, or one of six main menu teams |
 
-**Utility:** `GET /health` (status check) · `GET /tools` and `GET /tools/<name>` (tool definitions with public URLs) · `GET /scenarios` · `GET /session` (xAI `session.update` payload) · `GET /state` (sign-in, cases, transfers, call log) · `GET /debug/requests` (last 50 raw requests) · `POST /reset?scenario=<id>` (start over).
+**Utility:** `GET /health` (status check) · `GET /tools` and `GET /tools/<name>` (tool definitions with public URLs) · `GET /scenarios` · `GET /session` (xAI `session.update` payload) · `GET /state` (sign-in, cases, transfers, recap emails, call log) · `GET /debug/requests` (last 50 raw requests) · `POST /reset?scenario=<id>` (start over).
 
 ## Behavior worth knowing
 
@@ -56,5 +58,6 @@ Ten more scenarios are available by ID (via `/reset?scenario=<id>` or `?scenario
 - **Flexible request formats.** Arguments are accepted as a flat JSON body, wrapped in `arguments`, as a JSON string, nested in a tool-call message, as form fields, or as query parameters. Missing arguments return `tool_ran: false` with a message telling the model not to treat it as a result.
 - **Per-call state.** Calls are kept separate by an `X-Call-Id` header, a `call_id` query parameter, or a call or conversation ID in the body; otherwise they share one session, which `select_demo_scenario` resets at the start of each call.
 - **Optional API key.** Set `API_KEY` on Railway to require `Authorization: Bearer <key>` (or `X-API-Key`) on tool calls, `/state`, `/reset`, and `/debug/requests`.
+- **Recap emails.** Set `RECAP_EMAIL_TO` to the address on file for Blue Fern Café (otherwise `owner@bluefern.example`). Set `RESEND_API_KEY` to send for real through Resend; without it, the email is built but not sent, and shows up in `/state`. `RECAP_EMAIL_FROM` overrides the sender (default `Merchant Services <onboarding@resend.dev>`).
 
-**Run locally:** `python3 -m mock_backend serve` (port 8787) · `python3 -m mock_backend repl` · `python3 -m unittest` (49 tests).
+**Run locally:** `python3 -m mock_backend serve` (port 8787) · `python3 -m mock_backend repl` · `python3 -m unittest` (56 tests).

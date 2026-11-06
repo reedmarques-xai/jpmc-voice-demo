@@ -182,6 +182,40 @@
   },
   {
     "type": "function",
+    "name": "get_email_on_file",
+    "description": "Call this only after a verified caller says yes to getting an email recap of the charges. Then read email_spoken back exactly as written and ask: 'I have {email_spoken} on file. Is that right?' Don't call send_recap_email until the caller says yes. If they say it's wrong, don't send; you can't change it on this call, so offer to connect them with the account changes team. If email_on_file is false, say there's no email on file and offer the account changes team. Never accept or use an email address the caller says.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "merchant_id": {
+          "type": "string",
+          "description": "The Merchant ID from the successful authenticate_merchant result."
+        }
+      },
+      "required": ["merchant_id"]
+    }
+  },
+  {
+    "type": "function",
+    "name": "send_recap_email",
+    "description": "Call this only after you've read the email on file from get_email_on_file to the caller and they've said it's right. It emails a recap of the deposit charges for that day to the address on file. Then say: 'Done. The recap is on its way to {to_spoken}.' Never read the email contents aloud. Call it once per call; if it returns already_sent, just say it's already on its way. If it returns an error, apologize and say you can't send it right now.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "merchant_id": {
+          "type": "string",
+          "description": "The Merchant ID from the successful authenticate_merchant result."
+        },
+        "batch_date": {
+          "type": "string",
+          "description": "The same day you used for get_deposit_reconciliation, such as 'Sunday', 'yesterday', or YYYY-MM-DD."
+        }
+      },
+      "required": ["merchant_id", "batch_date"]
+    }
+  },
+  {
+    "type": "function",
     "name": "transfer",
     "description": "Call this to end your part of the call and hand the caller off, always after you've said the handoff line out loud. Use 'collections' for a collections hold during business hours. Use 'fraud' for a fraud hold more than 4 days old during business hours, when the caller says 'specialist' or presses 2 after a hold message, or when they ask for a person during business hours. Use a main menu queue once the caller's need is clear and you've confirmed it in one sentence ('Okay, connecting you with terminal support'). Never transfer to collections or fraud without is_business_hours returning open true. Call it once; after it succeeds, stop talking.",
     "parameters": {

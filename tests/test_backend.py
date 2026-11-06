@@ -1,7 +1,10 @@
 import json
+import os
 import unittest
+from unittest import mock
+from urllib.error import URLError
 
-from mock_backend import SCENARIOS, MockBackend, build_session_update
+from mock_backend import SCENARIOS, MockBackend, build_session_update, mailer
 from mock_backend.backend import SERVICE_QUEUES, SPECIALIST_QUEUES
 from mock_backend.session import load_tools
 
@@ -220,6 +223,81 @@ class DepositShortTests(unittest.TestCase):
         d = b.call("get_disputes", {"merchant_id": BLUE_FERN})["disputes"][0]
         self.assertTrue(d["response_due_known"])
         self.assertEqual(d["response_due_spoken"], "Wednesday, November 18th")
+
+
+class EmailRecapTests(unittest.TestCase):
+    def setUp(self):
+        self.env = mock.patch.dict(os.environ)
+        self.env.start()
+        os.environ.pop("RESEND_API_KEY", None)
+        self.addCleanup(self.env.stop)
+        self.b = authed("deposit_short", bank_account_last4="4821")
+        self.email = self.b.scenario.merchants[0].email_on_file
+
+    def _send(self, b=None):
+        return (b or self.b).call("send_recap_email", {"merchant_id": BLUE_FERN, "batch_date": "Sunday"})
+
+    def test_requires_authentication(self):
+        b = MockBackend("deposit_short")
+        self.assertIn("error", b.call("get_email_on_file", {"merchant_id": BLUE_FERN}))
+        self.assertIn("error", self._send(b))
+
+    def test_email_on_file_is_spelled_out(self):
+        r = self.b.call("get_email_on_file", {"merchant_id": BLUE_FERN})
+        self.assertEqual((r["email_on_file"], r["email"]), (True, self.email))
+        self.assertEqual(r["email_spoken"], mailer.spoken_email(self.email))
+        self.assertEqual(mailer.spoken_email("R.Marques@x.ai"), "r dot m-a-r-q-u-e-s at x dot a-i")
+        self.assertEqual(mailer.spoken_email("owner_1+demo@blue-fern.com"),
+                         "o-w-n-e-r underscore 1 plus d-e-m-o at b-l-u-e dash f-e-r-n dot com")
+
+    def test_must_look_up_email_before_sending(self):
+        self.assertIn("get_email_on_file", self._send()["error"])
+        self.assertEqual(self.b.recaps, [])
+
+    def test_recap_contents(self):
+        self.b.call("get_email_on_file", {"merchant_id": BLUE_FERN})
+        r = self._send()
+        self.assertEqual((r["sent"], r["delivery"], r["to_spoken"]), (True, "preview", mailer.spoken_email(self.email)))
+        recap = self.b.recaps[0]
+        self.assertEqual((recap["to"], recap["subject"]), (self.email, "Your deposit recap for Sunday, November 1st"))
+        for expected in ("$2,311.75", "$1,946.65", "$365.10", "$200 in American Express sales",
+                         "$120 taken back for a chargeback", "$45.10 in processing fees", "1-800-528-5200",
+                         "Send all your evidence together in one package", "Friday, November 6th"):
+            self.assertIn(expected, recap["text"])
+        for internal in ("conveyed", "9417263850", "service type", "respond by"):
+            self.assertNotIn(internal, recap["text"].lower())
+
+    def test_sends_once_per_call(self):
+        self.b.call("get_email_on_file", {"merchant_id": BLUE_FERN})
+        self._send()
+        self.assertTrue(self._send()["already_sent"])
+        self.assertEqual(len(self.b.recaps), 1)
+
+    def test_sends_through_resend_when_key_is_set(self):
+        os.environ.update(RESEND_API_KEY="re_test", RECAP_EMAIL_FROM="Merchant Services <recap@example.com>")
+        self.b.call("get_email_on_file", {"merchant_id": BLUE_FERN})
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = b'{"id": "email_123"}'
+        with mock.patch("mock_backend.mailer.urllib.request.urlopen", return_value=response) as urlopen:
+            r = self._send()
+        self.assertEqual((r["sent"], r["delivery"]), (True, "resend"))
+        request = urlopen.call_args.args[0]
+        payload = json.loads(request.data)
+        self.assertEqual(request.full_url, mailer.RESEND_URL)
+        self.assertEqual(request.get_header("Authorization"), "Bearer re_test")
+        self.assertEqual((payload["from"], payload["to"]), ("Merchant Services <recap@example.com>", [self.email]))
+        self.assertIn("$365.10", payload["text"])
+        self.assertIn("<li>", payload["html"])
+        self.assertEqual(self.b.recaps[0]["id"], "email_123")
+
+    def test_send_failure_is_reported_and_can_retry(self):
+        os.environ["RESEND_API_KEY"] = "re_test"
+        self.b.call("get_email_on_file", {"merchant_id": BLUE_FERN})
+        with mock.patch("mock_backend.mailer.urllib.request.urlopen", side_effect=URLError("down")):
+            self.assertEqual(self._send(), {"error": "Couldn't send the recap email right now."})
+        self.assertEqual(self.b.recaps[0]["status"], "failed")
+        os.environ.pop("RESEND_API_KEY")
+        self.assertTrue(self._send()["sent"])
 
 
 class DepositShortToolFileTests(unittest.TestCase):

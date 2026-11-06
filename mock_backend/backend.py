@@ -5,6 +5,7 @@ from datetime import date, datetime, timedelta
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
+from . import mailer
 from .scenarios import DEFAULT_SCENARIO, SCENARIOS, Deposit, Merchant, Scenario
 
 ET = ZoneInfo("America/New_York")
@@ -97,6 +98,8 @@ class MockBackend:
         self.bank_change_reported = False
         self.cases: list[dict[str, Any]] = []
         self.transfers: list[dict[str, Any]] = []
+        self.recaps: list[dict[str, Any]] = []
+        self.email_looked_up = False
         self.log: list[dict[str, Any]] = []
         self._tools: dict[str, Callable[..., dict[str, Any]]] = {
             "get_call_context": self.get_call_context,
@@ -110,6 +113,8 @@ class MockBackend:
             "get_disputes": self.get_disputes,
             "get_statement_fees": self.get_statement_fees,
             "report_unrecognized_bank_change": self.report_unrecognized_bank_change,
+            "get_email_on_file": self.get_email_on_file,
+            "send_recap_email": self.send_recap_email,
         }
 
     def call(self, name: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -350,6 +355,80 @@ class MockBackend:
             "blocked_account_last4": m.bank_change.new_account_last4,
             "deposits_continue_to_last4": m.bank_change.current_account_last4,
         }
+
+    def get_email_on_file(self, merchant_id: str) -> dict[str, Any]:
+        m = self._require_auth(merchant_id)
+        if not m.email_on_file:
+            return {"email_on_file": False}
+        self.email_looked_up = True
+        return {"email_on_file": True, "email": m.email_on_file, "email_spoken": mailer.spoken_email(m.email_on_file)}
+
+    def _recap_email(self, m: Merchant, batch_date: str) -> mailer.Email:
+        recon = self.get_deposit_reconciliation(m.merchant_id, batch_date)
+        day = recon["batch_date_spoken"]
+        batches = f"{recon['batch_count']} batches" if recon["batch_count"] > 1 else "1 batch"
+        accounted = "all of it accounted for" if recon["fully_explained"] else f"{recon['unexplained']} under review"
+        sections = [
+            ("Deposit summary", [
+                f"Card sales: {recon['batches_total']} ({batches})",
+                f"Deposited: {recon['deposited']} on {recon['deposit_date_spoken']} "
+                f"to the account ending in {recon['bank_account_last4']}",
+                f"Difference: {recon['difference']}, {accounted}",
+            ]),
+            ("Where the difference went", [f"{c['amount']} {c['explanation']}" for c in recon["causes"]]
+             + (["Nothing is on hold."] if recon["holds"] == "none" else [])),
+        ]
+
+        next_steps = [c["next_step"] for c in recon["causes"] if c.get("next_step")]
+        dispute_ids = {c["dispute_id"] for c in recon["causes"] if c.get("dispute_id")}
+        for d in self.get_disputes(m.merchant_id)["disputes"]:
+            if d["dispute_id"] not in dispute_ids:
+                continue
+            line = f"Chargeback on a {d['amount']} {d['card_brand']} sale: it's waiting for your response."
+            if d.get("merchant_guidance"):
+                line += f" {d['merchant_guidance']}"
+            if d["response_due_known"]:
+                line += f" Please respond by {d['response_due_spoken']}."
+            elif d["time_sensitive"]:
+                line += " Disputes are time sensitive, so please send it as soon as you can."
+            next_steps.append(line)
+        if next_steps:
+            sections.append(("What to do next", next_steps))
+
+        upcoming = [f"Your sales from {spoken_date(d.batch_date)} are scheduled to reach your account "
+                    f"{spoken_date(d.deposit_date)}."
+                    for d in sorted(m.deposits, key=lambda d: d.batch_date) if self._timing(d) == "not_yet_due"]
+        if upcoming:
+            sections.append(("Coming up", upcoming))
+
+        return mailer.render(
+            to=m.email_on_file or "",
+            subject=f"Your deposit recap for {day}",
+            greeting=f"Hi {m.name}, here's a recap of your call about the deposit for {day}.",
+            sections=sections,
+            footer="This is an automated recap from Chase Merchant Services. Please don't reply to this email.",
+        )
+
+    def send_recap_email(self, merchant_id: str, batch_date: str) -> dict[str, Any]:
+        m = self._require_auth(merchant_id)
+        if not m.email_on_file:
+            raise ToolError("There's no email address on file for this account.")
+        if not self.email_looked_up:
+            raise ToolError("Call get_email_on_file first, read the address to the caller, and get a yes before sending.")
+        to_spoken = mailer.spoken_email(m.email_on_file)
+        sent = next((r for r in self.recaps if r["status"] == "sent"), None)
+        if sent:
+            return {"sent": True, "already_sent": True, "to_spoken": to_spoken}
+        email = self._recap_email(m, batch_date)
+        record: dict[str, Any] = {"to": email.to, "subject": email.subject, "text": email.text,
+                                  "at": self._now.isoformat()}
+        try:
+            delivery = mailer.send(email)
+        except mailer.MailError as exc:
+            self.recaps.append({**record, "status": "failed", "detail": str(exc)})
+            raise ToolError("Couldn't send the recap email right now.")
+        self.recaps.append({**record, "status": "sent", **delivery})
+        return {"sent": True, "to_spoken": to_spoken, "delivery": delivery["delivery"]}
 
     def transfer(self, queue: str, reason: str) -> dict[str, Any]:
         if queue not in SPECIALIST_QUEUES | SERVICE_QUEUES:

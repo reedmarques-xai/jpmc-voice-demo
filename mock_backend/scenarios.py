@@ -1,6 +1,7 @@
 """Demo scenarios. Each one fixes the clock, the dialed line, the caller's phone
 number, and the merchant accounts the mock backend knows about."""
 
+import os
 from dataclasses import dataclass, field
 from datetime import date
 
@@ -73,6 +74,7 @@ class Merchant:
     ani: str
     postal_code: str
     deposit_account_last4: str | None = None
+    email_on_file: str | None = None
     collections_hold: bool = False
     fraud_hold_placed: date | None = None
     bank_change: BankChangeRequest | None = None
@@ -115,6 +117,7 @@ _blue_fern = dict(
     ani=BLUE_FERN_ANI,
     postal_code="10013",
     deposit_account_last4="4821",
+    email_on_file=os.environ.get("RECAP_EMAIL_TO") or "owner@bluefern.example",
     deposits=_NORMAL_DEPOSITS,
     statement=_NORMAL_STATEMENT,
 )
