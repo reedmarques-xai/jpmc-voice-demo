@@ -1,9 +1,9 @@
 """HTTP server exposing each tool as its own endpoint.
 
-Per-call state (authentication, cases, transfers) is keyed by a call ID taken
+Per-call state (authentication, recap emails, transfers) is keyed by a call ID taken
 from the X-Call-Id header, the ?call_id= query param, or a call/conversation/session
-ID field in the request body; requests without one share the "default" call. The scenario comes from ?scenario= or X-Scenario, falling
-back to the DEFAULT_SCENARIO env var.
+ID field in the request body; requests without one share the "default" call. Every
+authenticate_merchant request starts that call over, so each new caller begins fresh.
 """
 
 import hmac
@@ -17,7 +17,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from .backend import MockBackend
-from .scenarios import DEFAULT_SCENARIO, DEMO_MENU, SCENARIOS
+from .scenarios import SCENARIO
 from .session import build_session_update, load_tools
 
 MAX_CALLS = 500
@@ -29,31 +29,29 @@ TOOLS = {t["name"]: t for t in load_tools()}
 
 
 class CallStore:
-    def __init__(self, default_scenario: str):
-        self.default_scenario = default_scenario
+    def __init__(self):
         self._calls: OrderedDict[str, MockBackend] = OrderedDict()
         self._lock = threading.Lock()
 
-    def get(self, call_id: str, scenario: str | None) -> MockBackend:
+    def get(self, call_id: str) -> MockBackend:
         with self._lock:
             backend = self._calls.get(call_id)
-            if backend is None or (scenario and backend.scenario.id != scenario):
-                backend = MockBackend(scenario or self.default_scenario)
-                self._calls[call_id] = backend
+            if backend is None:
+                backend = self._calls[call_id] = MockBackend()
             self._calls.move_to_end(call_id)
             while len(self._calls) > MAX_CALLS:
                 self._calls.popitem(last=False)
             return backend
 
-    def reset(self, call_id: str, scenario: str | None) -> MockBackend:
+    def reset(self, call_id: str) -> MockBackend:
         with self._lock:
             self._calls.pop(call_id, None)
-        return self.get(call_id, scenario)
+        return self.get(call_id)
 
 
 WRAPPER_KEYS = ("arguments", "parameters", "params", "args", "input", "tool_input")
 CALL_ID_KEYS = ("call_id", "callId", "conversation_id", "conversationId", "session_id", "sessionId")
-RESERVED_QUERY = {"call_id", "scenario"}
+RESERVED_QUERY = {"call_id"}
 MAX_SEARCH_NODES = 500
 
 
@@ -123,20 +121,6 @@ def _parse_body(raw: bytes, content_type: str) -> Any:
     return {k: v[0] for k, v in parse_qs(text).items()}
 
 
-def select_demo_scenario(store: CallStore, call_id: str, choice: str) -> dict[str, Any]:
-    """Start a fresh demo call on the chosen scenario. Accepts a menu number or scenario ID."""
-    key = choice.strip().lower().replace(" ", "_")
-    by_number = {str(n): sid for n, sid, _ in DEMO_MENU}
-    scenario_id = by_number.get(key.removeprefix("option_").removeprefix("number_"), key)
-    if scenario_id not in SCENARIOS:
-        options = "; ".join(f"{n} = {label}" for n, _, label in DEMO_MENU)
-        return {"error": f"Unknown option '{choice}'. Read the options to the caller again: {options}.",
-                "tool_ran": False}
-    s = store.reset(call_id, scenario_id).scenario
-    reason = next((label for _, sid, label in DEMO_MENU if sid == s.id), s.description)
-    return {"selected": True, "scenario": s.id, "caller_reason": reason}
-
-
 def make_handler(store: CallStore, api_key: str | None, public_base_url: str | None):
     recent_requests: deque[dict[str, Any]] = deque(maxlen=MAX_LOGGED_REQUESTS)
 
@@ -159,19 +143,13 @@ def make_handler(store: CallStore, api_key: str | None, public_base_url: str | N
             self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
             self.send_header("Access-Control-Allow-Headers",
-                             "Content-Type, Authorization, X-API-Key, X-Call-Id, X-Scenario")
+                             "Content-Type, Authorization, X-API-Key, X-Call-Id")
 
         def _query(self) -> dict[str, str]:
             return {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
 
         def _call_id(self) -> str:
             return self.headers.get("X-Call-Id") or self._query().get("call_id") or "default"
-
-        def _scenario(self) -> str | None:
-            scenario = self._query().get("scenario") or self.headers.get("X-Scenario")
-            if scenario and scenario not in SCENARIOS:
-                raise ValueError(f"Unknown scenario '{scenario}'. Options: {', '.join(SCENARIOS)}")
-            return scenario
 
         def _authorized(self) -> bool:
             if not api_key:
@@ -206,7 +184,7 @@ def make_handler(store: CallStore, api_key: str | None, public_base_url: str | N
             path = urlparse(self.path).path.rstrip("/") or "/"
             if path in {"/", "/health"}:
                 return self._send(200, {"status": "ok", "service": "chase-merchant-voice-tools",
-                                        "default_scenario": store.default_scenario})
+                                        "scenario": SCENARIO.id})
             if path == "/tools":
                 return self._send(200, [self._tool_listing(n) for n in TOOLS])
             if path.startswith("/tools/"):
@@ -214,19 +192,13 @@ def make_handler(store: CallStore, api_key: str | None, public_base_url: str | N
                 if name not in TOOLS:
                     return self._send(404, {"error": f"Unknown tool '{name}'."})
                 return self._send(200, self._tool_listing(name))
-            if path == "/scenarios":
-                return self._send(200, [{"id": s.id, "description": s.description, "expected": s.expected_path,
-                                         "default": s.id == store.default_scenario} for s in SCENARIOS.values()])
             if path == "/session":
                 return self._send(200, build_session_update(self._query().get("voice", "Ara")))
             if path == "/state":
                 if not self._authorized():
                     return self._send(401, {"error": "Unauthorized"})
-                try:
-                    b = store.get(self._call_id(), self._scenario())
-                except ValueError as exc:
-                    return self._send(400, {"error": str(exc)})
-                return self._send(200, {"call_id": self._call_id(), "scenario": b.scenario.id,
+                b = store.get(self._call_id())
+                return self._send(200, {"call_id": self._call_id(),
                                         "authenticated": b.authenticated_merchant_id, "cases": b.cases,
                                         "transfers": b.transfers, "recaps": b.recaps, "log": b.log})
             if path == "/debug/requests":
@@ -241,23 +213,17 @@ def make_handler(store: CallStore, api_key: str | None, public_base_url: str | N
                 return self._send(401, {"error": "Unauthorized"})
             length = int(self.headers.get("Content-Length") or 0)
             raw = self.rfile.read(length) if length else b""
-            if path == "/tools/select_demo_scenario":
-                return self._handle_tool("select_demo_scenario", raw, self._query().get("scenario"))
-            try:
-                scenario = self._scenario()
-            except ValueError as exc:
-                return self._send(400, {"error": str(exc)})
             if path == "/reset":
-                b = store.reset(self._call_id(), scenario)
-                return self._send(200, {"call_id": self._call_id(), "scenario": b.scenario.id})
+                store.reset(self._call_id())
+                return self._send(200, {"call_id": self._call_id(), "reset": True})
             if path.startswith("/tools/"):
                 name = path.removeprefix("/tools/")
                 if name not in TOOLS:
                     return self._send(404, {"error": f"Unknown tool '{name}'."})
-                return self._handle_tool(name, raw, scenario)
+                return self._handle_tool(name, raw)
             self._send(404, {"error": "Not found"})
 
-        def _handle_tool(self, name: str, raw: bytes, scenario: str | None) -> None:
+        def _handle_tool(self, name: str, raw: bytes) -> None:
             tool = TOOLS[name]
             entry: dict[str, Any] = {
                 "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -274,9 +240,6 @@ def make_handler(store: CallStore, api_key: str | None, public_base_url: str | N
                 return self._send(400, result)
             call_id = self.headers.get("X-Call-Id") or self._query().get("call_id") or find_call_id(body) or "default"
             args = extract_args(tool, body, self._query())
-            if name == "select_demo_scenario" and not args.get("scenario") and scenario:
-                args["scenario"] = scenario
-                scenario = None
             missing = [p for p in tool["parameters"].get("required", []) if not args.get(p)]
             entry.update(call_id=call_id, parsed_args=args)
             if missing:
@@ -288,10 +251,10 @@ def make_handler(store: CallStore, api_key: str | None, public_base_url: str | N
                     "tool_ran": False,
                     "missing_arguments": missing,
                 }
-            elif name == "select_demo_scenario":
-                result = select_demo_scenario(store, call_id, args["scenario"])
+            elif name == "authenticate_merchant":
+                result = store.reset(call_id).call(name, args)
             else:
-                result = store.get(call_id, scenario).call(name, args)
+                result = store.get(call_id).call(name, args)
             entry["result"] = result
             print(f"tool={name} call_id={call_id} args={json.dumps(args, ensure_ascii=False)} "
                   f"result={json.dumps(result, ensure_ascii=False)}", flush=True)
@@ -300,19 +263,17 @@ def make_handler(store: CallStore, api_key: str | None, public_base_url: str | N
     return Handler
 
 
-def create_server(host: str, port: int, default_scenario: str) -> ThreadingHTTPServer:
-    if default_scenario not in SCENARIOS:
-        raise KeyError(f"Unknown scenario '{default_scenario}'. Options: {', '.join(SCENARIOS)}")
+def create_server(host: str, port: int) -> ThreadingHTTPServer:
     railway_domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN")
     public_base_url = os.environ.get("PUBLIC_BASE_URL") or (f"https://{railway_domain}" if railway_domain else None)
-    handler = make_handler(CallStore(default_scenario), os.environ.get("API_KEY") or None, public_base_url)
+    handler = make_handler(CallStore(), os.environ.get("API_KEY") or None, public_base_url)
     return ThreadingHTTPServer((host, port), handler)
 
 
-def run(host: str, port: int, default_scenario: str) -> None:
-    server = create_server(host, port, default_scenario)
+def run(host: str, port: int) -> None:
+    server = create_server(host, port)
     auth = "on" if os.environ.get("API_KEY") else "off"
-    print(f"Mock tools listening on {host}:{port} (default scenario: {default_scenario}, api key: {auth})", flush=True)
+    print(f"Mock tools listening on {host}:{port} (scenario: {SCENARIO.id}, api key: {auth})", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

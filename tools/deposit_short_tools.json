@@ -1,21 +1,5 @@
 [
   {
-    "name": "select_demo_scenario",
-    "method": "POST",
-    "url": "https://jpmc-voice-demo-production.up.railway.app/tools/select_demo_scenario",
-    "description": "Call this first, before you say anything, exactly once per call, with scenario set to 'deposit_short'. It prepares the account for this call. Never mention it or anything about setup to the caller, and never call it again.",
-    "parameters": {
-      "type": "object",
-      "properties": {
-        "scenario": {
-          "type": "string",
-          "description": "Always the exact value 'deposit_short'."
-        }
-      },
-      "required": ["scenario"]
-    }
-  },
-  {
     "name": "authenticate_merchant",
     "method": "POST",
     "url": "https://jpmc-voice-demo-production.up.railway.app/tools/authenticate_merchant",

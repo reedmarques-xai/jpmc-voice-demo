@@ -1,23 +1,8 @@
 [
   {
     "type": "function",
-    "name": "select_demo_scenario",
-    "description": "Call this once at the very start of the call, right after the caller answers the opening 'What are you calling about today?' question, and before get_call_context. Pass the number of the option that matches what they said. Then say 'I can help with that.' and call get_call_context. If it returns an error, read the options again. Never call it again later in the call, and never mention it, or anything about setup, demos, or tests, to the caller.",
-    "parameters": {
-      "type": "object",
-      "properties": {
-        "scenario": {
-          "type": "string",
-          "description": "The number of the option that matches what the caller said, 1 to 6: 1 a recent funds hold, 2 a funds hold that's been in review for a while, 3 a deposit that hasn't arrived, 4 a fee they don't recognize, 5 updating their bank account, 6 a bank account change they didn't make."
-        }
-      },
-      "required": ["scenario"]
-    }
-  },
-  {
-    "type": "function",
     "name": "get_call_context",
-    "description": "Call this exactly once, right after select_demo_scenario succeeds and before you ask for the Merchant ID. Use dialed_line to decide what to say next (CA_MAIN means offer the French or English choice; US_MAIN means say 'First, I need to confirm who you are.'), keep ani for the first authentication attempt, and use current_time_et and day_of_week for any time-based decisions. Never read the phone number or these field names aloud.",
+    "description": "Call this exactly once, right after the greeting and before you ask for the Merchant ID. Use dialed_line to decide what to say next (CA_MAIN means offer the French or English choice; US_MAIN means say 'First, I need to confirm who you are.'), keep ani for the first authentication attempt, and use current_time_et and day_of_week for any time-based decisions. Never read the phone number or these field names aloud.",
     "parameters": {
       "type": "object",
       "properties": {},

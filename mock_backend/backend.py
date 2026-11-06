@@ -1,4 +1,4 @@
-"""Mock implementations of the voice agent's tools, driven by a Scenario."""
+"""Mock implementations of the voice agent's tools, driven by the deposit-short scenario."""
 
 import re
 from datetime import date, datetime, timedelta
@@ -6,7 +6,7 @@ from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 from . import mailer
-from .scenarios import DEFAULT_SCENARIO, SCENARIOS, Deposit, Merchant, Scenario
+from .scenarios import SCENARIO, Deposit, Merchant, Scenario
 
 ET = ZoneInfo("America/New_York")
 
@@ -89,10 +89,8 @@ def resolve_date(value: str, today: date) -> date:
 
 
 class MockBackend:
-    def __init__(self, scenario_id: str = DEFAULT_SCENARIO, now_et: datetime | None = None):
-        if scenario_id not in SCENARIOS:
-            raise KeyError(f"Unknown scenario '{scenario_id}'. Options: {', '.join(SCENARIOS)}")
-        self.scenario: Scenario = SCENARIOS[scenario_id]
+    def __init__(self, now_et: datetime | None = None):
+        self.scenario: Scenario = SCENARIO
         self._now = now_et or datetime.fromisoformat(self.scenario.now_et).replace(tzinfo=ET)
         self.authenticated_merchant_id: str | None = None
         self.bank_change_reported = False
@@ -124,8 +122,6 @@ class MockBackend:
         try:
             if name not in self._tools:
                 raise ToolError(f"Unknown tool '{name}'.")
-            if name in self.scenario.failing_tools:
-                raise ToolError("Service temporarily unavailable.")
             result = self._tools[name](**args)
         except TypeError as exc:
             result = {"error": f"Invalid arguments: {exc}"}
